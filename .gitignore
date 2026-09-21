@@ -1,0 +1,7 @@
+# Build outputs
+out/
+dist/
+*.tar.gz
+*.zip
+*.img
+.DS_Store

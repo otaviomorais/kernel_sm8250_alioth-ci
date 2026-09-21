@@ -1,0 +1,286 @@
+name: Build Alioth Kernel (AOSP 16)
+
+on:
+  schedule:
+    - cron: '0 3 * * *' # Executa diariamente às 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      enable_ksu:
+        description: 'Integrar KernelSU'
+        required: true
+        type: boolean
+        default: true
+      force_build:
+        description: 'Forçar compilação mesmo se não houver novos commits upstream'
+        required: true
+        type: boolean
+        default: true
+      custom_boot_url:
+        description: 'URL direta opcional de um boot.img base da sua ROM para injetar'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM_REPO: 'PocoF3Releases/kernel_xiaomi_sm8250'
+  UPSTREAM_BRANCH: 'aosp-16'
+  DEVICE: 'alioth'
+  DEFCONFIG: 'alioth_defconfig'
+  BUILD_FLAGS: >-
+    ARCH=arm64 SUBARCH=arm64
+    CC=clang AS=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
+    OBJCOPY=llvm-objcopy STRIP=llvm-strip LLVM=1 LLVM_IAS=1
+    CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+jobs:
+  build:
+    name: Compilar Kernel Alioth
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout do Repositório CI
+        uses: actions/checkout@v4
+
+      - name: Checar atualizações no upstream
+        id: check_upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          echo "Consultando último commit em $UPSTREAM_REPO ($UPSTREAM_BRANCH)..."
+          UPSTREAM_DATA=$(curl -fsSL "https://api.github.com/repos/$UPSTREAM_REPO/branches/$UPSTREAM_BRANCH")
+          COMMIT_SHA=$(echo "$UPSTREAM_DATA" | jq -r '.commit.sha')
+          COMMIT_MSG=$(echo "$UPSTREAM_DATA" | jq -r '.commit.commit.message' | head -n 1)
+          COMMIT_DATE=$(echo "$UPSTREAM_DATA" | jq -r '.commit.commit.author.date')
+          SHORT_SHA="${COMMIT_SHA:0:8}"
+
+          echo "commit_sha=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "commit_msg=$COMMIT_MSG" >> "$GITHUB_OUTPUT"
+          echo "commit_date=$COMMIT_DATE" >> "$GITHUB_OUTPUT"
+
+          LATEST_RELEASE_TAG=$(gh release view --json tagName --jq .tagName 2>/dev/null || echo "")
+          echo "Última release encontrada: $LATEST_RELEASE_TAG"
+
+          IS_MANUAL="${{ github.event_name == 'workflow_dispatch' }}"
+          FORCE_BUILD="${{ github.event.inputs.force_build == 'true' }}"
+
+          if [[ "$IS_MANUAL" == "true" && "$FORCE_BUILD" == "true" ]]; then
+            echo "Execução manual com force_build=true. Prosseguindo."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$LATEST_RELEASE_TAG" == *"$SHORT_SHA"* ]]; then
+            if [[ "$IS_MANUAL" == "true" ]]; then
+              echo "Commit $SHORT_SHA já compilado, mas execução foi disparada manualmente. Prosseguindo."
+              echo "should_build=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "Upstream inalterado desde a última release ($SHORT_SHA). Pulando execução agendada."
+              echo "should_build=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "Novo commit upstream detectado: $SHORT_SHA ($COMMIT_MSG). Prosseguindo com a compilação."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configurar Swap de 10GB
+        if: steps.check_upstream.outputs.should_build == 'true'
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 10
+
+      - name: Instalar dependências de compilação
+        if: steps.check_upstream.outputs.should_build == 'true'
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex build-essential file libssl-dev libncurses-dev \
+            python3 cpio rsync zip unzip jq \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+      - name: Configurar ZyC-Clang 16
+        if: steps.check_upstream.outputs.should_build == 'true'
+        run: |
+          set -e
+          mkdir -p "$HOME/zyc-stage"
+          curl -fsSL -o "$RUNNER_TEMP/zyc.tar.gz" \
+            https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260807-release/Clang-16.0.6-20260807.tar.gz
+          tar -xzf "$RUNNER_TEMP/zyc.tar.gz" -C "$HOME/zyc-stage"
+          ZCLANG=$(find "$HOME/zyc-stage" -name clang -print -quit)
+          [ -n "$ZCLANG" ] || { echo 'FATAL: clang não encontrado no tarball'; exit 1; }
+          ln -sfn "$(dirname $(dirname "$ZCLANG"))" "$HOME/zyc"
+          echo "$HOME/zyc/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/zyc/bin:$PATH"
+          clang --version
+          ld.lld --version
+
+      - name: Clonar código-fonte do Kernel Upstream (aosp-16)
+        if: steps.check_upstream.outputs.should_build == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: PocoF3Releases/kernel_xiaomi_sm8250
+          ref: aosp-16
+          path: kernel
+          depth: 1
+
+      - name: Integrar KernelSU
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false')
+        run: |
+          set -e
+          cd kernel
+          echo "Aplicando setup do KernelSU..."
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
+          echo "CONFIG_KSU=y" >> arch/arm64/configs/$DEFCONFIG
+          echo "CONFIG_KPROBES=y" >> arch/arm64/configs/$DEFCONFIG
+          echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/$DEFCONFIG
+          echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/$DEFCONFIG
+          echo "KernelSU integrado com sucesso."
+
+      - name: Gerar defconfig
+        if: steps.check_upstream.outputs.should_build == 'true'
+        run: |
+          set -e
+          cd kernel
+          make -j$(nproc) O=out $BUILD_FLAGS $DEFCONFIG
+
+      - name: Compilar Kernel (Image, dtbs, dtbo.img)
+        if: steps.check_upstream.outputs.should_build == 'true'
+        run: |
+          set -e
+          cd kernel
+          make -j$(nproc) O=out $BUILD_FLAGS Image dtbs dtbo.img
+
+      - name: Coletar artefatos de saída
+        if: steps.check_upstream.outputs.should_build == 'true'
+        run: |
+          set -e
+          mkdir -p dist
+          cp kernel/out/arch/arm64/boot/Image dist/Image
+          cp kernel/out/arch/arm64/boot/dtbo.img dist/dtbo.img
+          cat kernel/out/arch/arm64/boot/dts/vendor/qcom/*.dtb > dist/dtb
+          cp kernel/out/.config dist/kernel-config
+          test -s dist/Image
+          test -s dist/dtb
+          test -s dist/dtbo.img
+          echo "Binários do Kernel gerados com sucesso."
+
+      - name: Empacotar AnyKernel3 Zip Flashável
+        if: steps.check_upstream.outputs.should_build == 'true'
+        run: |
+          set -e
+          SHORT_SHA="${{ steps.check_upstream.outputs.short_sha }}"
+          AK3_DIR="ak3_pack"
+          cp -r anykernel "$AK3_DIR"
+          cp dist/Image "$AK3_DIR/Image"
+          cp dist/dtb "$AK3_DIR/dtb"
+          cp dist/dtbo.img "$AK3_DIR/dtbo.img"
+          chmod 755 "$AK3_DIR/META-INF/com/google/android/update-binary"
+          
+          ZIP_NAME="AnyKernel3-Alioth-aosp16-${SHORT_SHA}.zip"
+          cd "$AK3_DIR"
+          zip -r -X "../dist/$ZIP_NAME" .
+          cd ..
+          echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
+          unzip -l "dist/$ZIP_NAME"
+
+      - name: Preparar magiskboot e Gerar boot.img
+        if: steps.check_upstream.outputs.should_build == 'true'
+        run: |
+          set -e
+          mkdir -p boot_pack
+          cd boot_pack
+
+          # Extrair magiskboot x86_64 direto do APK oficial do Magisk
+          curl -fsSL -o magisk.apk https://github.com/topjohnwu/Magisk/releases/download/v28.1/Magisk-v28.1.apk
+          unzip -p magisk.apk lib/x86_64/libmagiskboot.so > magiskboot
+          chmod +x magiskboot
+
+          CUSTOM_URL="${{ github.event.inputs.custom_boot_url }}"
+          if [ -n "$CUSTOM_URL" ]; then
+            echo "Baixando boot.img customizado da URL fornecida: $CUSTOM_URL"
+            curl -fsSL -o base_boot.img "$CUSTOM_URL"
+          else
+            echo "Baixando boot.img base do Alioth AOSP..."
+            curl -fsSL -o boot.zip https://raw.githubusercontent.com/sakana164/Build-Kernel-Action/main/boot.zip
+            unzip -q boot.zip
+            mv boot.img base_boot.img
+          fi
+
+          echo "Descompactando boot.img base..."
+          ./magiskboot unpack base_boot.img
+
+          echo "Injetando novo Image e dtb..."
+          cp ../dist/Image kernel
+          if [ -f dtb ]; then
+            cp ../dist/dtb dtb
+          fi
+
+          echo "Reempacotando boot.img..."
+          ./magiskboot repack base_boot.img ../dist/boot.img
+          cd ..
+          test -s dist/boot.img
+          echo "boot.img gerado com sucesso."
+
+      - name: Upload de Artefatos no GitHub Actions
+        if: steps.check_upstream.outputs.should_build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: alioth-kernel-${{ steps.check_upstream.outputs.short_sha }}
+          path: dist/
+          retention-days: 14
+
+      - name: Criar GitHub Release
+        if: steps.check_upstream.outputs.should_build == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          SHORT_SHA="${{ steps.check_upstream.outputs.short_sha }}"
+          FULL_SHA="${{ steps.check_upstream.outputs.commit_sha }}"
+          COMMIT_MSG="${{ steps.check_upstream.outputs.commit_msg }}"
+          BUILD_DATE=$(date -u +'%Y-%m-%d')
+          TAG_NAME="aosp16-${BUILD_DATE}-${SHORT_SHA}"
+
+          KSU_STATUS="Ativado (KernelSU oficial via Kprobes)"
+          if [ "${{ github.event.inputs.enable_ksu }}" = "false" ]; then
+            KSU_STATUS="Desativado"
+          fi
+
+          cat <<EOF > release_notes.md
+          # Alioth Kernel (Poco F3 / Redmi K40) — AOSP 16
+
+          Compilação automatizada baseada no repositório oficial [PocoF3Releases/kernel_xiaomi_sm8250](https://github.com/PocoF3Releases/kernel_xiaomi_sm8250/tree/aosp-16).
+
+          ### Informações do Build
+          - **Upstream Commit:** [\`${SHORT_SHA}\`](https://github.com/PocoF3Releases/kernel_xiaomi_sm8250/commit/${FULL_SHA})
+          - **Mensagem Upstream:** ${COMMIT_MSG}
+          - **Branch Base:** \`aosp-16\`
+          - **Toolchain:** ZyC-Clang 16 (ThinLTO + CFI)
+          - **KernelSU:** ${KSU_STATUS}
+
+          ---
+
+          ### Como Instalar (Métodos de Flash)
+
+          #### Opção 1: Via Recovery (TWRP / OrangeFox) — **Recomendado**
+          1. Baixe o pacote **\`${ZIP_NAME}\`**.
+          2. No recovery, instale o arquivo zip normalmente. Ele preserva o ramdisk da sua ROM atual, atualiza o kernel na partição \`boot\` e grava a partição \`dtbo\`.
+
+          #### Opção 2: Via Fastboot
+          1. Baixe os arquivos **\`boot.img\`** e **\`dtbo.img\`**.
+          2. Conecte o aparelho em modo Fastboot e execute no computador/Termux:
+          \`\`\`bash
+          fastboot flash boot boot.img
+          fastboot flash dtbo dtbo.img
+          fastboot reboot
+          \`\`\`
+          EOF
+
+          gh release create "$TAG_NAME" \
+            dist/"$ZIP_NAME" \
+            dist/boot.img \
+            dist/dtbo.img \
+            dist/Image \
+            --title "Alioth Kernel AOSP 16 (${BUILD_DATE} - ${SHORT_SHA})" \
+            --notes-file release_notes.md
