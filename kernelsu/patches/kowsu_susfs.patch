@@ -1,0 +1,87 @@
+diff --git a/kernel/feature/kernel_umount.c b/kernel/feature/kernel_umount.c
+index 15aded3..ebf3640 100644
+--- a/kernel/feature/kernel_umount.c
++++ b/kernel/feature/kernel_umount.c
+@@ -114,3 +114,10 @@ void __exit ksu_kernel_umount_exit(void)
+ {
+ 	ksu_unregister_feature_handler(KSU_FEATURE_KERNEL_UMOUNT);
+ }
++
++#ifdef CONFIG_KSU_SUSFS
++void ksu_try_umount(const char *mnt, bool check_mnt, int flags, uid_t uid)
++{
++	try_umount(mnt, flags);
++}
++#endif
+diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
+index b510ba2..cdb1599 100644
+--- a/kernel/selinux/rules.c
++++ b/kernel/selinux/rules.c
+@@ -139,6 +139,10 @@ static int apply_kernelsu_rules_fn(void *ptr)
+ 	ksu_allow(db, "system_server", KERNEL_SU_DOMAIN, "process", "getpgid");
+ 	ksu_allow(db, "system_server", KERNEL_SU_DOMAIN, "process", "sigkill");
+ 
++#ifdef CONFIG_KSU_SUSFS
++	ksu_allow(db, "zygote", "labeledfs", "filesystem", "unmount");
++#endif
++
+ 	ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "read");
+ 	ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "write");
+ 	ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "connectto");
+diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
+index 04e5ffe..8e265b7 100644
+--- a/kernel/selinux/selinux.c
++++ b/kernel/selinux/selinux.c
+@@ -227,3 +227,34 @@ void escape_to_root_for_adb_root(void)
+ 	}
+ 	commit_creds(cred);
+ }
++
++#ifdef CONFIG_KSU_SUSFS
++bool susfs_is_current_ksu_domain(void)
++{
++	return is_ksu_domain();
++}
++
++bool susfs_is_current_zygote_domain(void)
++{
++	return is_zygote(current_cred());
++}
++
++bool susfs_is_current_init_domain(void)
++{
++	return is_init(current_cred());
++}
++
++u32 susfs_get_current_sid(void)
++{
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
++	const struct task_security_struct *tsec = selinux_cred(current_cred());
++#else
++	const struct cred_security_struct *tsec = selinux_cred(current_cred());
++#endif
++	return tsec ? tsec->sid : 0;
++}
++
++void susfs_set_zygote_sid(void) {}
++void susfs_set_ksu_sid(void) {}
++void susfs_set_init_sid(void) {}
++#endif
+diff --git a/kernel/selinux/selinux.h b/kernel/selinux/selinux.h
+index cbeac55..9f63a5d 100644
+--- a/kernel/selinux/selinux.h
++++ b/kernel/selinux/selinux.h
+@@ -38,3 +38,13 @@ void setup_ksu_cred();
+ void escape_to_root_for_adb_root();
+ 
+ #endif
++
++#ifdef CONFIG_KSU_SUSFS
++bool susfs_is_current_ksu_domain(void);
++bool susfs_is_current_zygote_domain(void);
++bool susfs_is_current_init_domain(void);
++u32 susfs_get_current_sid(void);
++void susfs_set_zygote_sid(void);
++void susfs_set_ksu_sid(void);
++void susfs_set_init_sid(void);
++#endif
