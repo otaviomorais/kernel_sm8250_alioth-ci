@@ -49,6 +49,8 @@ CONFIG_KSU_SUSFS_SUS_MOUNT=y
 CONFIG_FHANDLE=y
 EOF
 
+cd - >/dev/null
+
 echo "======================================================"
 echo " KernelSU + SUSFS aplicado com sucesso no Kernel!    "
 echo "======================================================"

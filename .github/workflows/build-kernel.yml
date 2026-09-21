@@ -131,6 +131,16 @@ jobs:
           echo "Aplicando integração completa de KernelSU + SUSFS..."
           bash kernelsu/apply.sh kernel
 
+      - name: Configurar ferramentas de dtbo (mkdtboimg)
+        if: steps.check_upstream.outputs.should_build == 'true'
+        run: |
+          set -e
+          sudo ln -sf /usr/bin/python3 /usr/bin/python2
+          mkdir -p kernel/scripts/ufdt/libufdt/utils/src
+          cp -f tools/mkdtboimg.py kernel/scripts/ufdt/libufdt/utils/src/mkdtboimg.py
+          chmod +x kernel/scripts/ufdt/libufdt/utils/src/mkdtboimg.py
+          sed -i 's/python2 \$(MKDTBO)/python3 \$(MKDTBO)/g' kernel/scripts/Makefile.lib
+
       - name: Gerar defconfig
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |
