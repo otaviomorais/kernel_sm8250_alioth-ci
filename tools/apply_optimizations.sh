@@ -24,4 +24,8 @@ sed -i '/CONFIG_DEFAULT_TCP_CONG/d' "$CONFIG_FILE"
 sed -i '/CONFIG_TCP_CONG_ADVANCED/d' "$CONFIG_FILE"
 
 cat "$SCRIPT_DIR/optimizations.config" >> "$CONFIG_FILE"
-echo "Otimizações injetadas com sucesso em $CONFIG_FILE!"
+
+# Definir ZSTD como compressor padrao nativo da zRAM no driver do kernel
+sed -i 's/static const char \*default_compressor = "lz4";/static const char \*default_compressor = "zstd";/' "$KERNEL_DIR/drivers/block/zram/zram_drv.c"
+
+echo "Otimizações injetadas com sucesso em $CONFIG_FILE e drivers!"
