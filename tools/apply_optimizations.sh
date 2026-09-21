@@ -21,6 +21,7 @@ echo "=== Aplicando Otimizações de Performance (BBR, ZSTD, Kyber) no defconfig
 # Remover defaults conflitantes se existirem
 sed -i '/CONFIG_DEFAULT_CUBIC/d' "$CONFIG_FILE"
 sed -i '/CONFIG_DEFAULT_TCP_CONG/d' "$CONFIG_FILE"
+sed -i '/CONFIG_TCP_CONG_ADVANCED/d' "$CONFIG_FILE"
 
 cat "$SCRIPT_DIR/optimizations.config" >> "$CONFIG_FILE"
 echo "Otimizações injetadas com sucesso em $CONFIG_FILE!"
