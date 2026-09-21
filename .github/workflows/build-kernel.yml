@@ -15,6 +15,11 @@ on:
         required: true
         type: boolean
         default: true
+      enable_droidspaces:
+        description: 'Habilitar suporte ao Droidspaces (LXC/Containers/Namespaces)'
+        required: false
+        type: boolean
+        default: true
       custom_boot_url:
         description: 'URL direta opcional de um boot.img base da sua ROM para injetar'
         required: false
@@ -131,6 +136,13 @@ jobs:
           echo "Aplicando integração completa de KernelSU + SUSFS..."
           bash kernelsu/apply.sh kernel
 
+      - name: Integrar Suporte ao Droidspaces
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false')
+        run: |
+          set -e
+          echo "Aplicando integração de Droidspaces..."
+          bash droidspaces/apply.sh kernel
+
       - name: Configurar ferramentas de dtbo (mkdtboimg)
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |
@@ -246,9 +258,14 @@ jobs:
           BUILD_DATE=$(date -u +'%Y-%m-%d')
           TAG_NAME="aosp16-${BUILD_DATE}-${SHORT_SHA}"
 
-          KSU_STATUS="Ativado (KernelSU-Next + SUSFS integrado do Aurora Kernel)"
+          KSU_STATUS="Ativado (KernelSU-Next + SUSFS completo: SUS Maps, Try Umount, Open Redirect, Auto Try Umount Bind, Hide Symbols, OverlayFS Auto Kstat)"
           if [ "${{ github.event.inputs.enable_ksu }}" = "false" ]; then
             KSU_STATUS="Desativado"
+          fi
+
+          DROIDSPACES_STATUS="Ativado (LXC / Containers / Namespaces / cgroup fix)"
+          if [ "${{ github.event.inputs.enable_droidspaces }}" = "false" ]; then
+            DROIDSPACES_STATUS="Desativado"
           fi
 
           cat <<EOF > release_notes.md
@@ -261,7 +278,8 @@ jobs:
           - **Mensagem Upstream:** ${COMMIT_MSG}
           - **Branch Base:** \`aosp-16\`
           - **Toolchain:** ZyC-Clang 16 (ThinLTO + CFI)
-          - **KernelSU:** ${KSU_STATUS}
+          - **KernelSU + SUSFS:** ${KSU_STATUS}
+          - **Droidspaces Support:** ${DROIDSPACES_STATUS}
 
           ---
 

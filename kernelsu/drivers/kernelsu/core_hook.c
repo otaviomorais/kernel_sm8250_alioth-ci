@@ -870,6 +870,9 @@ int ksu_handle_prctl(int option, unsigned long arg2, unsigned long arg3,
 #ifdef CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT
 			enabled_features |= (1 << 14);
 #endif
+#if defined(CONFIG_KSU_SUSFS_SUS_MAPS) || defined(CONFIG_KSU_SUSFS_SUS_MAP)
+			enabled_features |= (1 << 15);
+#endif
 			error = copy_to_user((void __user*)arg3, (void*)&enabled_features, sizeof(enabled_features));
 			pr_info("susfs: CMD_SUSFS_SHOW_ENABLED_FEATURES -> ret: %d\n", error);
 			if (copy_to_user((void __user*)arg5, &error, sizeof(error)))
