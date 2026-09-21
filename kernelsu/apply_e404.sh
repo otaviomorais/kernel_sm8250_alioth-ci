@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-# Script de integração do KernelSU (Next) com opção de SUSFS
+# Script de integração do KernelSU (Next) + SUSFS no Kernel E404 (MiKona / Alioth)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -z "$1" ]; then
     echo "Uso: $0 <caminho_do_kernel> [enable_susfs: true|false] [defconfig_path]"
@@ -9,16 +9,17 @@ if [ -z "$1" ]; then
 fi
 KERNEL_DIR="$(cd "$1" && pwd)"
 ENABLE_SUSFS="${2:-true}"
-CONFIG_FILE="${3:-$KERNEL_DIR/arch/arm64/configs/alioth_defconfig}"
+CONFIG_FILE="${3:-$KERNEL_DIR/arch/arm64/configs/vendor/alioth_defconfig}"
 
 echo "======================================================"
-echo " Aplicando KernelSU (KernelSU-Next) no Kernel         "
+echo " Aplicando KernelSU no Kernel E404                    "
 echo " SUSFS Habilitado: $ENABLE_SUSFS                      "
 echo " Defconfig: $CONFIG_FILE                              "
 echo "======================================================"
 
-# 1. Copiar diretório drivers/kernelsu
-echo "[1/4] Copiando drivers/kernelsu (KernelSU-Next)..."
+# 1. Substituir drivers/kernelsu pelo KernelSU-Next
+echo "[1/4] Instalando KernelSU-Next em drivers/kernelsu..."
+rm -rf "$KERNEL_DIR/KernelSU"
 rm -rf "$KERNEL_DIR/drivers/kernelsu"
 cp -r "$SCRIPT_DIR/drivers/kernelsu" "$KERNEL_DIR/drivers/kernelsu"
 
@@ -30,21 +31,24 @@ if [ "$ENABLE_SUSFS" = "true" ]; then
     cp -f "$SCRIPT_DIR/include/linux/susfs.h" "$KERNEL_DIR/include/linux/susfs.h"
     cp -f "$SCRIPT_DIR/include/linux/susfs_def.h" "$KERNEL_DIR/include/linux/susfs_def.h"
 
-    # 3. Aplicar patch de hooks do kernel
-    echo "[3/4] Aplicando patches de hooks do SUSFS no Kernel..."
+    # 3. Aplicar patch de hooks do SUSFS adaptado para E404
+    echo "[3/4] Aplicando patches de hooks do SUSFS no Kernel E404..."
     cd "$KERNEL_DIR"
-    if git apply --check "$SCRIPT_DIR/patches/ksu_susfs_hooks.patch" 2>/dev/null; then
-        git apply "$SCRIPT_DIR/patches/ksu_susfs_hooks.patch"
+    if git apply --check "$SCRIPT_DIR/patches/e404_ksu_susfs_hooks.patch" 2>/dev/null; then
+        git apply "$SCRIPT_DIR/patches/e404_ksu_susfs_hooks.patch"
     else
         echo "AVISO: tentando git apply com 3-way..."
-        git apply -3 "$SCRIPT_DIR/patches/ksu_susfs_hooks.patch"
+        git apply -3 "$SCRIPT_DIR/patches/e404_ksu_susfs_hooks.patch"
     fi
     cd - >/dev/null
 
-    # 4. Habilitar configurações no defconfig
+    # 4. Injetar configurações KSU + SUSFS no vendor/alioth_defconfig
     echo "[4/4] Injetando configurações KSU + SUSFS no defconfig..."
+    # Limpar flags de KSU existentes no defconfig do E404 para evitar conflitos
+    sed -i '/CONFIG_KSU/d' "$CONFIG_FILE"
+
     cat << 'EOF' >> "$CONFIG_FILE"
-# KernelSU + SUSFS Complete Integration
+# KernelSU + SUSFS Complete Integration (E404)
 CONFIG_KSU=y
 CONFIG_KSU_LSM_SECURITY_HOOKS=y
 CONFIG_KSU_SUSFS=y
@@ -70,6 +74,7 @@ else
     echo "[2/4] Pulando arquivos do SUSFS (desabilitado)..."
     echo "[3/4] Pulando patch de hooks do SUSFS (desabilitado)..."
     echo "[4/4] Injetando configurações apenas de KernelSU (sem SUSFS)..."
+    sed -i '/CONFIG_KSU/d' "$CONFIG_FILE"
     cat << 'EOF' >> "$CONFIG_FILE"
 # KernelSU Integration (Without SUSFS)
 CONFIG_KSU=y
@@ -79,5 +84,5 @@ EOF
 fi
 
 echo "======================================================"
-echo " Integração concluída com sucesso!                    "
+echo " Integração E404 concluída com sucesso!               "
 echo "======================================================"

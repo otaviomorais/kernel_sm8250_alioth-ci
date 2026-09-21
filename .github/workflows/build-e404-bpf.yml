@@ -1,8 +1,8 @@
-name: Build Alioth Kernel (AOSP 16)
+name: Build Alioth Kernel (E404 BPF)
 
 on:
   schedule:
-    - cron: '0 3 * * *' # Executa diariamente às 03:00 UTC
+    - cron: '0 4 * * *' # Executa diariamente às 04:00 UTC
   workflow_dispatch:
     inputs:
       enable_ksu:
@@ -35,10 +35,10 @@ permissions:
   contents: write
 
 env:
-  UPSTREAM_REPO: 'PocoF3Releases/kernel_xiaomi_sm8250'
-  UPSTREAM_BRANCH: 'aosp-16'
+  UPSTREAM_REPO: 'kvsnr113/xiaomi_sm8250_kernel_e404'
+  UPSTREAM_BRANCH: 'staging-bpf'
   DEVICE: 'alioth'
-  DEFCONFIG: 'alioth_defconfig'
+  DEFCONFIG: 'vendor/alioth_defconfig'
   BUILD_FLAGS: >-
     ARCH=arm64 SUBARCH=arm64
     CC=clang AS=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
@@ -48,7 +48,7 @@ env:
 
 jobs:
   build:
-    name: Compilar Kernel Alioth
+    name: Compilar Kernel Alioth E404 BPF
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout do Repositório CI
@@ -72,8 +72,8 @@ jobs:
           echo "commit_msg=$COMMIT_MSG" >> "$GITHUB_OUTPUT"
           echo "commit_date=$COMMIT_DATE" >> "$GITHUB_OUTPUT"
 
-          LATEST_RELEASE_TAG=$(gh release view --json tagName --jq .tagName 2>/dev/null || echo "")
-          echo "Última release encontrada: $LATEST_RELEASE_TAG"
+          LATEST_RELEASE_TAG=$(gh release list --json tagName --jq '.[].tagName' 2>/dev/null | grep "^e404-bpf-" | head -n 1 || echo "")
+          echo "Última release E404 encontrada: $LATEST_RELEASE_TAG"
 
           IS_MANUAL="${{ github.event_name == 'workflow_dispatch' }}"
           FORCE_BUILD="${{ github.event.inputs.force_build == 'true' }}"
@@ -81,7 +81,7 @@ jobs:
           if [[ "$IS_MANUAL" == "true" && "$FORCE_BUILD" == "true" ]]; then
             echo "Execução manual com force_build=true. Prosseguindo."
             echo "should_build=true" >> "$GITHUB_OUTPUT"
-          elif [[ "$LATEST_RELEASE_TAG" == *"$SHORT_SHA"* ]]; then
+          elif [[ -n "$LATEST_RELEASE_TAG" && "$LATEST_RELEASE_TAG" == *"$SHORT_SHA"* ]]; then
             if [[ "$IS_MANUAL" == "true" ]]; then
               echo "Commit $SHORT_SHA já compilado, mas execução foi disparada manualmente. Prosseguindo."
               echo "should_build=true" >> "$GITHUB_OUTPUT"
@@ -116,9 +116,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ${{ runner.os }}-kernel-ccache-${{ steps.check_upstream.outputs.short_sha }}
+          key: ${{ runner.os }}-e404-kernel-ccache-${{ steps.check_upstream.outputs.short_sha }}
           restore-keys: |
-            ${{ runner.os }}-kernel-ccache-
+            ${{ runner.os }}-e404-kernel-ccache-
 
       - name: Inicializar ccache
         if: steps.check_upstream.outputs.should_build == 'true'
@@ -151,46 +151,46 @@ jobs:
           clang --version
           ld.lld --version
 
-      - name: Clonar código-fonte do Kernel Upstream (aosp-16)
+      - name: Clonar código-fonte do Kernel Upstream (E404 staging-bpf)
         if: steps.check_upstream.outputs.should_build == 'true'
         uses: actions/checkout@v4
         with:
-          repository: PocoF3Releases/kernel_xiaomi_sm8250
-          ref: aosp-16
+          repository: kvsnr113/xiaomi_sm8250_kernel_e404
+          ref: staging-bpf
           path: kernel
           fetch-depth: 1
 
-      - name: Integrar KernelSU + SUSFS
+      - name: Integrar KernelSU + SUSFS (E404)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false')
         run: |
           set -e
           ENABLE_SUSFS="${{ github.event.inputs.enable_susfs }}"
-          echo "Aplicando integração de KernelSU (SUSFS: ${ENABLE_SUSFS:-true})..."
-          bash kernelsu/apply.sh kernel "${ENABLE_SUSFS:-true}"
+          echo "Aplicando integração de KernelSU no E404 (SUSFS: ${ENABLE_SUSFS:-true})..."
+          bash kernelsu/apply_e404.sh kernel "${ENABLE_SUSFS:-true}" kernel/arch/arm64/configs/vendor/alioth_defconfig
 
       - name: Integrar Suporte ao Droidspaces
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false')
         run: |
           set -e
           echo "Aplicando integração de Droidspaces..."
-          bash droidspaces/apply.sh kernel
+          bash droidspaces/apply.sh kernel kernel/arch/arm64/configs/vendor/alioth_defconfig
 
       - name: Aplicar Otimizações de Kernel (BBR, ZSTD, Kyber, PSI)
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |
           set -e
           echo "Aplicando otimizações de performance..."
-          bash tools/apply_optimizations.sh kernel
+          bash tools/apply_optimizations.sh kernel kernel/arch/arm64/configs/vendor/alioth_defconfig
 
       - name: Configurar ferramentas de dtbo (mkdtboimg)
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |
           set -e
-          sudo ln -sf /usr/bin/python3 /usr/bin/python2
+          sudo ln -sf /usr/bin/python3 /usr/bin/python2 || true
           mkdir -p kernel/scripts/ufdt/libufdt/utils/src
           cp -f tools/mkdtboimg.py kernel/scripts/ufdt/libufdt/utils/src/mkdtboimg.py
           chmod +x kernel/scripts/ufdt/libufdt/utils/src/mkdtboimg.py
-          sed -i 's/python2 \$(MKDTBO)/python3 \$(MKDTBO)/g' kernel/scripts/Makefile.lib
+          sed -i 's/python2 \$(MKDTBO)/python3 \$(MKDTBO)/g' kernel/scripts/Makefile.lib 2>/dev/null || true
 
       - name: Gerar defconfig
         if: steps.check_upstream.outputs.should_build == 'true'
@@ -223,7 +223,7 @@ jobs:
           test -s dist/Image
           test -s dist/dtb
           test -s dist/dtbo.img
-          echo "Binários do Kernel gerados com sucesso."
+          echo "Binários do Kernel E404 gerados com sucesso."
 
       - name: Empacotar AnyKernel3 Zip Flashável
         if: steps.check_upstream.outputs.should_build == 'true'
@@ -237,7 +237,7 @@ jobs:
           cp dist/dtbo.img "$AK3_DIR/dtbo.img"
           chmod 755 "$AK3_DIR/META-INF/com/google/android/update-binary"
           
-          ZIP_NAME="AnyKernel3-Alioth-aosp16-${SHORT_SHA}.zip"
+          ZIP_NAME="AnyKernel3-Alioth-E404-BPF-${SHORT_SHA}.zip"
           cd "$AK3_DIR"
           zip -r -X "../dist/$ZIP_NAME" .
           cd ..
@@ -251,7 +251,6 @@ jobs:
           mkdir -p boot_pack
           cd boot_pack
 
-          # Extrair magiskboot x86_64 direto do APK oficial do Magisk
           curl -fsSL -o magisk.apk https://github.com/topjohnwu/Magisk/releases/download/v28.1/Magisk-v28.1.apk
           unzip -p magisk.apk lib/x86_64/libmagiskboot.so > magiskboot
           chmod +x magiskboot
@@ -286,7 +285,7 @@ jobs:
         if: steps.check_upstream.outputs.should_build == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: alioth-kernel-${{ steps.check_upstream.outputs.short_sha }}
+          name: alioth-e404-bpf-${{ steps.check_upstream.outputs.short_sha }}
           path: dist/
           retention-days: 14
 
@@ -300,7 +299,7 @@ jobs:
           FULL_SHA="${{ steps.check_upstream.outputs.commit_sha }}"
           COMMIT_MSG="${{ steps.check_upstream.outputs.commit_msg }}"
           BUILD_DATE=$(date -u +'%Y-%m-%d')
-          TAG_NAME="aosp16-${BUILD_DATE}-${SHORT_SHA}"
+          TAG_NAME="e404-bpf-${BUILD_DATE}-${SHORT_SHA}"
 
           KSU_STATUS="Ativado (KernelSU-Next + SUSFS completo: SUS Maps, Try Umount, Open Redirect, Auto Try Umount Bind, Hide Symbols, OverlayFS Auto Kstat)"
           if [ "${{ github.event.inputs.enable_ksu }}" = "false" ]; then
@@ -315,18 +314,23 @@ jobs:
           fi
 
           cat <<EOF > release_notes.md
-          # Alioth Kernel (Poco F3 / Redmi K40) — AOSP 16
+          # Alioth Kernel E404 BPF (Poco F3 / Redmi K40)
 
-          Compilação automatizada baseada no repositório oficial [PocoF3Releases/kernel_xiaomi_sm8250](https://github.com/PocoF3Releases/kernel_xiaomi_sm8250/tree/aosp-16).
+          Compilação de alta performance baseada no kernel [kvsnr113/xiaomi_sm8250_kernel_e404](https://github.com/kvsnr113/xiaomi_sm8250_kernel_e404/tree/staging-bpf).
 
-          ### Informações do Build
-          - **Upstream Commit:** [\`${SHORT_SHA}\`](https://github.com/PocoF3Releases/kernel_xiaomi_sm8250/commit/${FULL_SHA})
-          - **Mensagem Upstream:** ${COMMIT_MSG}
-          - **Branch Base:** \`aosp-16\`
-          - **Toolchain:** ZyC-Clang 16 (ThinLTO + CFI + ccache + Cortex-A77 tune)
-          - **KernelSU + SUSFS:** ${KSU_STATUS}
+          ### Destaques da Base E404 BPF
+          - **Agendador:** EEVDF + CASS (Qualcomm WALT totalmente removido, latência de agendamento ultra-baixa).
+          - **Compatibilidade A16+ / A17:** Backport massivo de eBPF do Linux 5.15 com spoofing inteligente de uname para daemons de sistema.
+          - **GPU & Hardware:** Otimizações Adreno KGSL por Hilmiy, Bypass Charging (\`smb5-lib\`) e proteção contra sobretensão na bateria.
+          - **KernelSU / SUSFS:** ${KSU_STATUS}
           - **Droidspaces Support:** ${DROIDSPACES_STATUS}
           - **Otimizações:** TCP Google BBR, ZSTD (zRAM), Kyber I/O (UFS 3.1), PSI
+
+          ### Informações do Build
+          - **Upstream Commit:** [\`${SHORT_SHA}\`](https://github.com/kvsnr113/xiaomi_sm8250_kernel_e404/commit/${FULL_SHA})
+          - **Mensagem Upstream:** ${COMMIT_MSG}
+          - **Branch Base:** \`staging-bpf\`
+          - **Toolchain:** ZyC-Clang 16 (ThinLTO + CFI + ccache + Cortex-A77 tune)
 
           ---
 
@@ -349,7 +353,7 @@ jobs:
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             echo "Release $TAG_NAME já existe. Atualizando notas e substituindo arquivos..."
             gh release edit "$TAG_NAME" \
-              --title "Alioth Kernel AOSP 16 (${BUILD_DATE} - ${SHORT_SHA})" \
+              --title "Alioth Kernel E404 BPF (${BUILD_DATE} - ${SHORT_SHA})" \
               --notes-file release_notes.md
             gh release upload "$TAG_NAME" \
               dist/"$ZIP_NAME" \
@@ -363,6 +367,6 @@ jobs:
               dist/boot.img \
               dist/dtbo.img \
               dist/Image \
-              --title "Alioth Kernel AOSP 16 (${BUILD_DATE} - ${SHORT_SHA})" \
+              --title "Alioth Kernel E404 BPF (${BUILD_DATE} - ${SHORT_SHA})" \
               --notes-file release_notes.md
           fi
