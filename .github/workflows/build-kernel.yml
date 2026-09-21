@@ -36,10 +36,10 @@ env:
   DEFCONFIG: 'alioth_defconfig'
   BUILD_FLAGS: >-
     ARCH=arm64 SUBARCH=arm64
-    CC="ccache clang" AS=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
+    CC=clang AS=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
     OBJCOPY=llvm-objcopy STRIP=llvm-strip LLVM=1 LLVM_IAS=1
     CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-    KCFLAGS="-mtune=cortex-a77"
+    KCFLAGS=-mtune=cortex-a77
 
 jobs:
   build:
@@ -137,8 +137,12 @@ jobs:
           ZCLANG=$(find "$HOME/zyc-stage" -name clang -print -quit)
           [ -n "$ZCLANG" ] || { echo 'FATAL: clang não encontrado no tarball'; exit 1; }
           ln -sfn "$(dirname $(dirname "$ZCLANG"))" "$HOME/zyc"
+          mkdir -p "$HOME/ccache-bin"
+          ln -sf "$(which ccache)" "$HOME/ccache-bin/clang"
+          ln -sf "$(which ccache)" "$HOME/ccache-bin/clang++"
+          echo "$HOME/ccache-bin" >> "$GITHUB_PATH"
           echo "$HOME/zyc/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/zyc/bin:$PATH"
+          export PATH="$HOME/ccache-bin:$HOME/zyc/bin:$PATH"
           clang --version
           ld.lld --version
 
