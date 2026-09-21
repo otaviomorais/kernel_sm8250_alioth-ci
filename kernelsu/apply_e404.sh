@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-# Script de integração do SUSFS sobre o KernelSU nativo do E404 (Kowsu / backslashxx)
+# Script de integração do KernelSU-Next com SUSFS no Kernel E404 BPF (staging-bpf)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -z "$1" ]; then
     echo "Uso: $0 <caminho_do_kernel> [enable_susfs: true|false] [defconfig_path]"
@@ -12,62 +12,51 @@ ENABLE_SUSFS="${2:-true}"
 CONFIG_FILE="${3:-$KERNEL_DIR/arch/arm64/configs/vendor/alioth_defconfig}"
 
 echo "======================================================"
-echo " Configurando KernelSU nativo do E404 (Kowsu)         "
+echo " Aplicando KernelSU-Next no Kernel E404 BPF           "
 echo " SUSFS Habilitado: $ENABLE_SUSFS                      "
 echo " Defconfig: $CONFIG_FILE                              "
 echo "======================================================"
 
-# 1. Garantir que o submódulo KernelSU do E404 esteja presente
-echo "[1/4] Verificando integridade do KernelSU nativo (Kowsu)..."
-cd "$KERNEL_DIR"
-if [ ! -d "KernelSU/kernel" ]; then
-    echo "Inicializando submódulo KernelSU..."
-    git submodule update --init --recursive KernelSU || git clone --depth 1 https://github.com/backslashxx/KernelSU KernelSU
-fi
+# 1. Substituir o submódulo/symlink Kowsu pelo KernelSU-Next limpo
+echo "[1/4] Substituindo Kowsu pelo KernelSU-Next em drivers/kernelsu..."
+rm -rf "$KERNEL_DIR/KernelSU"
+rm -rf "$KERNEL_DIR/drivers/kernelsu"
+cp -r "$SCRIPT_DIR/drivers/kernelsu" "$KERNEL_DIR/drivers/kernelsu"
 
-# Garantir symlink drivers/kernelsu -> ../KernelSU/kernel
-if [ ! -e "drivers/kernelsu" ]; then
-    ln -sf ../KernelSU/kernel drivers/kernelsu
-fi
-cd - >/dev/null
-
+# 2. Copiar arquivos do SUSFS para o Kernel se habilitado
 if [ "$ENABLE_SUSFS" = "true" ]; then
-    # 2. Copiar arquivos do SUSFS para o Kernel
     echo "[2/4] Copiando arquivos fonte do SUSFS..."
     cp -f "$SCRIPT_DIR/fs/susfs.c" "$KERNEL_DIR/fs/susfs.c"
     cp -f "$SCRIPT_DIR/fs/sus_su.c" "$KERNEL_DIR/fs/sus_su.c"
     cp -f "$SCRIPT_DIR/include/linux/susfs.h" "$KERNEL_DIR/include/linux/susfs.h"
     cp -f "$SCRIPT_DIR/include/linux/susfs_def.h" "$KERNEL_DIR/include/linux/susfs_def.h"
+else
+    echo "[2/4] Pulando cópia de arquivos fonte do SUSFS (desabilitado)..."
+fi
 
-    # 3. Aplicar hooks do SUSFS no Kernel (fs, include, kernel)
-    echo "[3/4] Aplicando patches de hooks do SUSFS no Kernel..."
-    cd "$KERNEL_DIR"
-    if git apply --check "$SCRIPT_DIR/patches/e404_ksu_susfs_hooks.patch" 2>/dev/null; then
-        git apply "$SCRIPT_DIR/patches/e404_ksu_susfs_hooks.patch"
-    else
-        echo "AVISO: tentando git apply com 3-way..."
-        git apply -3 "$SCRIPT_DIR/patches/e404_ksu_susfs_hooks.patch"
-    fi
-    cd - >/dev/null
+# 3. Aplicar hooks do KernelSU-Next e SUSFS no Kernel (fs, include, kernel)
+echo "[3/4] Aplicando patches de hooks do KernelSU-Next e SUSFS no Kernel..."
+cd "$KERNEL_DIR"
+if git apply --check "$SCRIPT_DIR/patches/e404_ksu_susfs_hooks.patch" 2>/dev/null; then
+    git apply "$SCRIPT_DIR/patches/e404_ksu_susfs_hooks.patch"
+    echo "Patch aplicado com sucesso via git apply!"
+else
+    echo "AVISO: tentando git apply com 3-way..."
+    git apply -3 "$SCRIPT_DIR/patches/e404_ksu_susfs_hooks.patch" || patch -p1 < "$SCRIPT_DIR/patches/e404_ksu_susfs_hooks.patch"
+fi
+cd - >/dev/null
 
-    # 4. Integrar suporte do SUSFS no próprio KernelSU (Kowsu)
-    echo "[4/4] Injetando compatibilidade do SUSFS no KernelSU (Kowsu)..."
-    cd "$KERNEL_DIR/KernelSU"
-    if git apply --check "$SCRIPT_DIR/patches/kowsu_susfs.patch" 2>/dev/null; then
-        git apply "$SCRIPT_DIR/patches/kowsu_susfs.patch"
-        echo "Patch SUSFS aplicado no Kowsu com sucesso!"
-    else
-        echo "Aplicando patch no Kowsu via git apply 3-way/patch..."
-        git apply -3 "$SCRIPT_DIR/patches/kowsu_susfs.patch" || patch -p1 < "$SCRIPT_DIR/patches/kowsu_susfs.patch" || true
-    fi
-    cd - >/dev/null
+# 4. Injetar configurações limpas do KernelSU-Next no defconfig
+echo "[4/4] Injetando configurações limpas do KernelSU-Next no defconfig..."
+# Remover configurações antigas do Kowsu (especialmente CONFIG_KSU_TAMPER_SYSCALL_TABLE)
+sed -i '/CONFIG_KSU/d' "$CONFIG_FILE"
+sed -i '/CONFIG_FHANDLE/d' "$CONFIG_FILE"
 
-    # Injetar configurações do SUSFS no defconfig
-    echo "Ativando flags do SUSFS no defconfig..."
-    sed -i '/CONFIG_KSU_SUSFS/d' "$CONFIG_FILE"
+if [ "$ENABLE_SUSFS" = "true" ]; then
     cat << 'EOF' >> "$CONFIG_FILE"
-# KernelSU (Kowsu) + SUSFS Integration
+# KernelSU-Next + SUSFS Integration
 CONFIG_KSU=y
+CONFIG_KSU_LSM_SECURITY_HOOKS=y
 CONFIG_KSU_SUSFS=y
 CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
 CONFIG_KSU_SUSFS_SUS_PATH=y
@@ -86,14 +75,15 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
 CONFIG_KSU_SUSFS_SUS_MAPS=y
 CONFIG_FHANDLE=y
 EOF
-
 else
-    echo "[2/4] Pulando arquivos do SUSFS (desabilitado)..."
-    echo "[3/4] Pulando patch de hooks do SUSFS no Kernel (desabilitado)..."
-    echo "[4/4] Mantendo KernelSU nativo (Kowsu) original sem SUSFS..."
-    sed -i '/CONFIG_KSU_SUSFS/d' "$CONFIG_FILE"
+    cat << 'EOF' >> "$CONFIG_FILE"
+# KernelSU-Next Integration (Without SUSFS)
+CONFIG_KSU=y
+CONFIG_KSU_LSM_SECURITY_HOOKS=y
+CONFIG_FHANDLE=y
+EOF
 fi
 
 echo "======================================================"
-echo " Integração E404 concluída com sucesso!               "
+echo " Integração KernelSU-Next no E404 concluída com sucesso!"
 echo "======================================================"

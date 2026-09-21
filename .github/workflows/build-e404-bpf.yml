@@ -159,7 +159,6 @@ jobs:
           ref: staging-bpf
           path: kernel
           fetch-depth: 1
-          submodules: recursive
 
       - name: Integrar KernelSU + SUSFS (E404)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false')
@@ -311,11 +310,11 @@ jobs:
           BUILD_DATE=$(date -u +'%Y-%m-%d')
           TAG_NAME="e404-bpf-${BUILD_DATE}-${SHORT_SHA}"
 
-          KSU_STATUS="Ativado (KernelSU nativo Kowsu + SUSFS completo: SUS Maps, Try Umount, Open Redirect, Auto Try Umount Bind, Hide Symbols, OverlayFS Auto Kstat)"
+          KSU_STATUS="Ativado (KernelSU-Next + SUSFS v1.5.5 completo: SUS Maps, Try Umount, Open Redirect, Auto Try Umount Bind, Hide Symbols, OverlayFS Auto Kstat)"
           if [ "${{ github.event.inputs.enable_ksu }}" = "false" ]; then
             KSU_STATUS="Desativado"
           elif [ "${{ github.event.inputs.enable_susfs }}" = "false" ]; then
-            KSU_STATUS="Ativado (KernelSU nativo Kowsu sem SUSFS)"
+            KSU_STATUS="Ativado (KernelSU-Next sem SUSFS)"
           fi
 
           DROIDSPACES_STATUS="Ativado (LXC / Containers / Namespaces / binfmt_misc / CFS Bandwidth / cgroup fix)"
