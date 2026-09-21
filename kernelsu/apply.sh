@@ -3,12 +3,11 @@ set -e
 
 # Script de integração do KernelSU + SUSFS do Aurora Kernel no Alioth AOSP 16
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-KERNEL_DIR="$1"
-
-if [ -z "$KERNEL_DIR" ]; then
+if [ -z "$1" ]; then
     echo "Uso: $0 <caminho_do_kernel>"
     exit 1
 fi
+KERNEL_DIR="$(cd "$1" && pwd)"
 
 echo "======================================================"
 echo " Aplicando KernelSU (KernelSU-Next) + SUSFS no Kernel "
@@ -29,11 +28,12 @@ cp -f "$SCRIPT_DIR/include/linux/susfs_def.h" "$KERNEL_DIR/include/linux/susfs_d
 # 3. Aplicar patch de hooks do kernel
 echo "[3/4] Aplicando patches de hooks do Kernel (fs, include, drivers)..."
 cd "$KERNEL_DIR"
-git apply --check "$SCRIPT_DIR/patches/ksu_susfs_hooks.patch" || {
-    echo "AVISO: git apply --check falhou, tentando git apply com 3-way..."
+if git apply --check "$SCRIPT_DIR/patches/ksu_susfs_hooks.patch" 2>/dev/null; then
+    git apply "$SCRIPT_DIR/patches/ksu_susfs_hooks.patch"
+else
+    echo "AVISO: tentando git apply com 3-way..."
     git apply -3 "$SCRIPT_DIR/patches/ksu_susfs_hooks.patch"
-}
-git apply "$SCRIPT_DIR/patches/ksu_susfs_hooks.patch"
+fi
 
 # 4. Habilitar configurações no defconfig
 echo "[4/4] Injetando configurações KSU + SUSFS no alioth_defconfig..."
