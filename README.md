@@ -65,4 +65,5 @@ Ao clicar em **Actions -> Build Alioth Kernel (AOSP 16) -> Run workflow**:
 |-----------|------|--------|-----------|
 | `enable_ksu` | boolean | `true` | Ativa/desativa integração do KernelSU |
 | `force_build` | boolean | `true` | Força a compilação mesmo se não houver novos commits |
+| `enable_droidspaces` | boolean | `true` | Habilita suporte completo ao Droidspaces (LXC, binfmt_misc, cgroups, veth) |
 | `custom_boot_url` | string | `""` | Link direto de um boot.img específico da sua ROM para injetar o kernel |

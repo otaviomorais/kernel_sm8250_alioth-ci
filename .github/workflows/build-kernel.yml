@@ -36,9 +36,10 @@ env:
   DEFCONFIG: 'alioth_defconfig'
   BUILD_FLAGS: >-
     ARCH=arm64 SUBARCH=arm64
-    CC=clang AS=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
+    CC="ccache clang" AS=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
     OBJCOPY=llvm-objcopy STRIP=llvm-strip LLVM=1 LLVM_IAS=1
     CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+    KCFLAGS="-mtune=cortex-a77"
 
 jobs:
   build:
@@ -102,7 +103,28 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             bc bison flex build-essential file libssl-dev libncurses-dev \
             python3 cpio rsync zip unzip jq \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            ccache
+
+      - name: Configurar Cache do ccache
+        if: steps.check_upstream.outputs.should_build == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-kernel-ccache-${{ steps.check_upstream.outputs.short_sha }}
+          restore-keys: |
+            ${{ runner.os }}-kernel-ccache-
+
+      - name: Inicializar ccache
+        if: steps.check_upstream.outputs.should_build == 'true'
+        run: |
+          mkdir -p ~/.ccache
+          echo "max_size = 5.0G" > ~/.ccache/ccache.conf
+          echo "compression = true" >> ~/.ccache/ccache.conf
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_COMPRESS=1" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=5G" >> "$GITHUB_ENV"
+          ccache -z
 
       - name: Configurar ZyC-Clang 16
         if: steps.check_upstream.outputs.should_build == 'true'
@@ -143,6 +165,13 @@ jobs:
           echo "Aplicando integração de Droidspaces..."
           bash droidspaces/apply.sh kernel
 
+      - name: Aplicar Otimizações de Kernel (BBR, ZSTD, Kyber, PSI)
+        if: steps.check_upstream.outputs.should_build == 'true'
+        run: |
+          set -e
+          echo "Aplicando otimizações de performance..."
+          bash tools/apply_optimizations.sh kernel
+
       - name: Configurar ferramentas de dtbo (mkdtboimg)
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |
@@ -166,6 +195,11 @@ jobs:
           set -e
           cd kernel
           make -j$(nproc) O=out $BUILD_FLAGS Image dtbs dtbo.img
+
+      - name: Exibir Estatísticas do ccache
+        if: steps.check_upstream.outputs.should_build == 'true'
+        run: |
+          ccache -s
 
       - name: Coletar artefatos de saída
         if: steps.check_upstream.outputs.should_build == 'true'
@@ -263,7 +297,7 @@ jobs:
             KSU_STATUS="Desativado"
           fi
 
-          DROIDSPACES_STATUS="Ativado (LXC / Containers / Namespaces / cgroup fix)"
+          DROIDSPACES_STATUS="Ativado (LXC / Containers / Namespaces / binfmt_misc / CFS Bandwidth / cgroup fix)"
           if [ "${{ github.event.inputs.enable_droidspaces }}" = "false" ]; then
             DROIDSPACES_STATUS="Desativado"
           fi
@@ -277,9 +311,10 @@ jobs:
           - **Upstream Commit:** [\`${SHORT_SHA}\`](https://github.com/PocoF3Releases/kernel_xiaomi_sm8250/commit/${FULL_SHA})
           - **Mensagem Upstream:** ${COMMIT_MSG}
           - **Branch Base:** \`aosp-16\`
-          - **Toolchain:** ZyC-Clang 16 (ThinLTO + CFI)
+          - **Toolchain:** ZyC-Clang 16 (ThinLTO + CFI + ccache + Cortex-A77 tune)
           - **KernelSU + SUSFS:** ${KSU_STATUS}
           - **Droidspaces Support:** ${DROIDSPACES_STATUS}
+          - **Otimizações:** TCP Google BBR, ZSTD (zRAM), Kyber I/O (UFS 3.1), PSI
 
           ---
 
