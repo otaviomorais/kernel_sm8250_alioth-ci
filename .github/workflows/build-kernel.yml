@@ -299,10 +299,23 @@ jobs:
           \`\`\`
           EOF
 
-          gh release create "$TAG_NAME" \
-            dist/"$ZIP_NAME" \
-            dist/boot.img \
-            dist/dtbo.img \
-            dist/Image \
-            --title "Alioth Kernel AOSP 16 (${BUILD_DATE} - ${SHORT_SHA})" \
-            --notes-file release_notes.md
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Release $TAG_NAME já existe. Atualizando notas e substituindo arquivos..."
+            gh release edit "$TAG_NAME" \
+              --title "Alioth Kernel AOSP 16 (${BUILD_DATE} - ${SHORT_SHA})" \
+              --notes-file release_notes.md
+            gh release upload "$TAG_NAME" \
+              dist/"$ZIP_NAME" \
+              dist/boot.img \
+              dist/dtbo.img \
+              dist/Image \
+              --clobber
+          else
+            gh release create "$TAG_NAME" \
+              dist/"$ZIP_NAME" \
+              dist/boot.img \
+              dist/dtbo.img \
+              dist/Image \
+              --title "Alioth Kernel AOSP 16 (${BUILD_DATE} - ${SHORT_SHA})" \
+              --notes-file release_notes.md
+          fi
