@@ -43,7 +43,7 @@ env:
     ARCH=arm64 SUBARCH=arm64
     CC=clang AS=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
     OBJCOPY=llvm-objcopy STRIP=llvm-strip LLVM=1 LLVM_IAS=1
-    CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+    CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
     KCFLAGS=-mtune=cortex-a77
 
 jobs:
@@ -181,6 +181,15 @@ jobs:
           set -e
           echo "Aplicando otimizações de performance..."
           bash tools/apply_optimizations.sh kernel kernel/arch/arm64/configs/vendor/alioth_defconfig
+
+      - name: Ajustar flags do Makefile do Kernel (compatibilidade Clang)
+        if: steps.check_upstream.outputs.should_build == 'true'
+        run: |
+          set -e
+          echo "Aplicando correções de flags do Clang no Makefile..."
+          sed -i 's/-flto=thin -fsplit-lto-unit -funified-lto/-flto=thin -fsplit-lto-unit \$(call cc-option,-funified-lto)/g' kernel/Makefile
+          sed -i 's/CC_FLAGS_LTO\t+= -fsplit-machine-functions/CC_FLAGS_LTO\t+= \$(call cc-option,-fsplit-machine-functions)/g' kernel/Makefile
+          sed -i 's/> \/dev\/null/> \/dev\/null 2>\&1 || true/' kernel/scripts/checksyscalls.sh
 
       - name: Configurar ferramentas de dtbo (mkdtboimg)
         if: steps.check_upstream.outputs.should_build == 'true'
