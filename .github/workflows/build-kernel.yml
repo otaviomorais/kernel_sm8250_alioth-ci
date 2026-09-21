@@ -124,18 +124,12 @@ jobs:
           path: kernel
           depth: 1
 
-      - name: Integrar KernelSU
+      - name: Integrar KernelSU + SUSFS (Aurora)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false')
         run: |
           set -e
-          cd kernel
-          echo "Aplicando setup do KernelSU..."
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
-          echo "CONFIG_KSU=y" >> arch/arm64/configs/$DEFCONFIG
-          echo "CONFIG_KPROBES=y" >> arch/arm64/configs/$DEFCONFIG
-          echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/$DEFCONFIG
-          echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/$DEFCONFIG
-          echo "KernelSU integrado com sucesso."
+          echo "Aplicando integração completa de KernelSU + SUSFS..."
+          bash kernelsu/apply.sh kernel
 
       - name: Gerar defconfig
         if: steps.check_upstream.outputs.should_build == 'true'
@@ -242,7 +236,7 @@ jobs:
           BUILD_DATE=$(date -u +'%Y-%m-%d')
           TAG_NAME="aosp16-${BUILD_DATE}-${SHORT_SHA}"
 
-          KSU_STATUS="Ativado (KernelSU oficial via Kprobes)"
+          KSU_STATUS="Ativado (KernelSU-Next + SUSFS integrado do Aurora Kernel)"
           if [ "${{ github.event.inputs.enable_ksu }}" = "false" ]; then
             KSU_STATUS="Desativado"
           fi

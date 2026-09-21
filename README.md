@@ -27,10 +27,13 @@ A cada compilação (automática ou manual), uma nova Release é gerada no repos
 
 ---
 
-## 🛡️ KernelSU Integrado
+## 🛡️ KernelSU + SUSFS Integrado (Aurora)
 
-O workflow integra nativamente o **KernelSU oficial via Kprobes**, garantindo compatibilidade com root moderno e módulos sem necessidade de patches destrutivos na árvore do kernel.
-Pode ser desativado ou ativado pelo seletor ao disparar a Action manualmente.
+O workflow integra nativamente o **KernelSU-Next + SUSFS completo** portado do seu repositório [aurora-kernel_alioth](https://github.com/otaviomorais/aurora-kernel_alioth), contendo:
+- `drivers/kernelsu/` com suporte a `ksud` embutido e hooks LSM.
+- `fs/susfs.c` com proteção de montagens (`sus_mount`), ocultação de paths (`sus_path`) e try_umount.
+- Totalmente compatível com detecções de root modernas e módulos.
+- Pode ser desativado ou ativado pelo seletor ao disparar a Action manualmente.
 
 ---
 
