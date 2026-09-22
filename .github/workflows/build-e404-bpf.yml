@@ -172,8 +172,8 @@ jobs:
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false')
         run: |
           set -e
-          echo "Aplicando integração de Droidspaces..."
-          bash droidspaces/apply.sh kernel kernel/arch/arm64/configs/vendor/alioth_defconfig
+          echo "Aplicando integração de Droidspaces (modo MINIMO: apenas USER_NS)..."
+          bash droidspaces/apply.sh kernel kernel/arch/arm64/configs/vendor/alioth_defconfig droidspaces/droidspaces-minimal.config
 
       - name: Ajustar Droidspaces para E404 (sem group-sched)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false')
@@ -348,7 +348,7 @@ jobs:
             KSU_STATUS="Ativado (KernelSU-Next sem SUSFS)"
           fi
 
-          DROIDSPACES_STATUS="Ativado (LXC / Containers / Namespaces / binfmt_misc / cgroup fix; sem CFS Bandwidth - incompativel com scheduler E404)"
+          DROIDSPACES_STATUS="Minimo (apenas USER_NS - modo teste de boot; sem CFS Bandwidth/MEMCG - incompativeis com scheduler E404)"
           if [ "${{ github.event.inputs.enable_droidspaces }}" = "false" ]; then
             DROIDSPACES_STATUS="Desativado"
           fi
