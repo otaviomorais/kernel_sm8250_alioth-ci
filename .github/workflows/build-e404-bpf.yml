@@ -175,6 +175,15 @@ jobs:
           echo "Aplicando integração de Droidspaces..."
           bash droidspaces/apply.sh kernel kernel/arch/arm64/configs/vendor/alioth_defconfig
 
+      - name: Verificar Droidspaces no defconfig (pré-build)
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false')
+        run: |
+          set -e
+          echo "Verificando injeção Droidspaces em kernel/arch/arm64/configs/vendor/alioth_defconfig..."
+          grep -q "^CONFIG_USER_NS=y" kernel/arch/arm64/configs/vendor/alioth_defconfig || { echo "FATAL: CONFIG_USER_NS=y ausente no defconfig. O apply.sh falhou."; exit 1; }
+          grep -E "^CONFIG_(NAMESPACES|PID_NS|UTS_NS|IPC_NS|NET_NS|OVERLAY_FS|BINFMT_MISC|CFS_BANDWIDTH)=y" kernel/arch/arm64/configs/vendor/alioth_defconfig || true
+          echo "Droidspaces OK no defconfig."
+
       - name: Aplicar Otimizações de Kernel (BBR, ZSTD, Kyber, PSI)
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |
@@ -207,6 +216,15 @@ jobs:
           set -e
           cd kernel
           make -j$(nproc) O=out $BUILD_FLAGS $DEFCONFIG
+
+      - name: Verificar Droidspaces no .config final
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false')
+        run: |
+          set -e
+          echo "Verificando suporte Droidspaces no .config final..."
+          grep -q "^CONFIG_USER_NS=y" kernel/out/.config || { echo "FATAL: CONFIG_USER_NS=y ausente no .config final."; grep -E "USER_NS|NAMESPACES" kernel/out/.config || true; exit 1; }
+          grep -E "^CONFIG_(NAMESPACES|PID_NS|UTS_NS|IPC_NS|NET_NS|OVERLAY_FS|BINFMT_MISC|CFS_BANDWIDTH|CGROUPS|SECCOMP)=y" kernel/out/.config || true
+          echo "Suporte total ao Droidspaces confirmado no .config."
 
       - name: Compilar Kernel (Image, dtbs, dtbo.img)
         if: steps.check_upstream.outputs.should_build == 'true'
