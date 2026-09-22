@@ -8,10 +8,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORIG_PWD="$(pwd)"
 KERNEL_ARG="$1"
 CONFIG_ARG="$2"
+DROID_CONFIG_ARG="$3"
 
 if [ -z "$KERNEL_ARG" ] || [ ! -d "$KERNEL_ARG" ]; then
     echo "ERRO: Diretório do kernel não especificado ou inexistente."
-    echo "Uso: $0 <caminho-para-o-kernel> [caminho-para-o-defconfig]"
+    echo "Uso: $0 <caminho-para-o-kernel> [caminho-para-o-defconfig] [arquivo-de-config-droidspaces]"
+    exit 1
+fi
+
+# Arquivo de configurações Droidspaces (full por padrão; ex: droidspaces-minimal.config)
+if [ -n "$DROID_CONFIG_ARG" ]; then
+    case "$DROID_CONFIG_ARG" in
+        /*) DROIDSPACES_CONFIG="$DROID_CONFIG_ARG" ;;
+        *) DROIDSPACES_CONFIG="$ORIG_PWD/$DROID_CONFIG_ARG" ;;
+    esac
+else
+    DROIDSPACES_CONFIG="$SCRIPT_DIR/droidspaces.config"
+fi
+
+if [ ! -f "$DROIDSPACES_CONFIG" ]; then
+    echo "FATAL: Arquivo de config Droidspaces $DROIDSPACES_CONFIG não encontrado."
     exit 1
 fi
 
@@ -32,6 +48,7 @@ else
     fi
 fi
 
+echo "Arquivo Droidspaces: $DROIDSPACES_CONFIG"
 echo "=== Aplicando Suporte ao Droidspaces no Kernel em $KERNEL_DIR ==="
 echo "Defconfig alvo: $CONFIG_FILE"
 
@@ -54,8 +71,10 @@ fi
 echo "[2/2] Injetando configurações Droidspaces no defconfig..."
 
 # Remove entradas conflitantes/duplicadas antes do append.
-# Extrai todos os símbolos de droidspaces.config (CONFIG_X=y e "# CONFIG_X is not set")
-# para garantir que o append seja a última ocorrência (vence no Kconfig).
+# Extrai todos os símbolos do arquivo Droidspaces selecionado
+# (CONFIG_X=y e "# CONFIG_X is not set") para garantir que o append
+# seja a última ocorrência (vence no Kconfig).
+# IMPORTANTE: só mexe nos símbolos presentes no arquivo selecionado.
 while IFS= read -r line || [ -n "$line" ]; do
     sym=""
     case "$line" in
@@ -65,14 +84,9 @@ while IFS= read -r line || [ -n "$line" ]; do
     if [ -n "$sym" ]; then
         sed -i "/CONFIG_${sym}/d" "$CONFIG_FILE"
     fi
-done < "$SCRIPT_DIR/droidspaces.config"
+done < "$DROIDSPACES_CONFIG"
 
-# Segurança extra: garante que símbolos críticos não fiquem como "is not set"
-for sym in USER_NS NAMESPACES PID_NS UTS_NS IPC_NS NET_NS OVERLAY_FS BINFMT_MISC CFS_BANDWIDTH ANDROID_PARANOID_NETWORK; do
-    sed -i "/CONFIG_${sym}/d" "$CONFIG_FILE"
-done
-
-cat "$SCRIPT_DIR/droidspaces.config" >> "$CONFIG_FILE"
+cat "$DROIDSPACES_CONFIG" >> "$CONFIG_FILE"
 
 # Fail-fast: se USER_NS não entrou, o build não deve prosseguir silenciosamente
 if ! grep -q "^CONFIG_USER_NS=y" "$CONFIG_FILE"; then
