@@ -175,6 +175,18 @@ jobs:
           echo "Aplicando integração de Droidspaces..."
           bash droidspaces/apply.sh kernel kernel/arch/arm64/configs/vendor/alioth_defconfig
 
+      - name: Ajustar Droidspaces para E404 (sem group-sched)
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false')
+        run: |
+          set -e
+          # O scheduler EEVDF/CASS do E404 nao compila com FAIR_GROUP_SCHED/CFS_BANDWIDTH
+          # (fair.c usa simbolos removidos: qcfs_rq, pelt_clock_throttled).
+          # Remove so essas duas; user/ns/cgroup/overlay/netfilter permanecem.
+          F=kernel/arch/arm64/configs/vendor/alioth_defconfig
+          sed -i '/CONFIG_FAIR_GROUP_SCHED/d; /CONFIG_CFS_BANDWIDTH/d; /CONFIG_RT_GROUP_SCHED/d' "$F"
+          printf '# CONFIG_FAIR_GROUP_SCHED is not set\n# CONFIG_CFS_BANDWIDTH is not set\n# CONFIG_RT_GROUP_SCHED is not set\n' >> "$F"
+          echo "Group-sched desabilitado para compatibilidade com E404."
+
       - name: Verificar Droidspaces no defconfig (pré-build)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false')
         run: |
@@ -335,7 +347,7 @@ jobs:
             KSU_STATUS="Ativado (KernelSU-Next sem SUSFS)"
           fi
 
-          DROIDSPACES_STATUS="Ativado (LXC / Containers / Namespaces / binfmt_misc / CFS Bandwidth / cgroup fix)"
+          DROIDSPACES_STATUS="Ativado (LXC / Containers / Namespaces / binfmt_misc / cgroup fix; sem CFS Bandwidth - incompativel com scheduler E404)"
           if [ "${{ github.event.inputs.enable_droidspaces }}" = "false" ]; then
             DROIDSPACES_STATUS="Desativado"
           fi
