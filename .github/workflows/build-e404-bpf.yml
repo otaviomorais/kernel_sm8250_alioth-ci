@@ -175,17 +175,18 @@ jobs:
           echo "Aplicando integração de Droidspaces..."
           bash droidspaces/apply.sh kernel kernel/arch/arm64/configs/vendor/alioth_defconfig
 
-      - name: Ajustar Droidspaces para E404 (sem group-sched)
+      - name: Ajustar Droidspaces para E404 (sem group-sched/memcg)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false')
         run: |
           set -e
           # O scheduler EEVDF/CASS do E404 nao compila com FAIR_GROUP_SCHED/CFS_BANDWIDTH
-          # (fair.c usa simbolos removidos: qcfs_rq, pelt_clock_throttled).
-          # Remove so essas duas; user/ns/cgroup/overlay/netfilter permanecem.
+          # (fair.c usa simbolos removidos: qcfs_rq, pelt_clock_throttled),
+          # e o MEMCG tambem nao ativa nessa arvore.
+          # Remove esses; user/ns/cgroup/overlay/netfilter permanecem.
           F=kernel/arch/arm64/configs/vendor/alioth_defconfig
-          sed -i '/CONFIG_FAIR_GROUP_SCHED/d; /CONFIG_CFS_BANDWIDTH/d; /CONFIG_RT_GROUP_SCHED/d' "$F"
-          printf '# CONFIG_FAIR_GROUP_SCHED is not set\n# CONFIG_CFS_BANDWIDTH is not set\n# CONFIG_RT_GROUP_SCHED is not set\n' >> "$F"
-          echo "Group-sched desabilitado para compatibilidade com E404."
+          sed -i '/CONFIG_FAIR_GROUP_SCHED/d; /CONFIG_CFS_BANDWIDTH/d; /CONFIG_RT_GROUP_SCHED/d; /CONFIG_MEMCG/d' "$F"
+          printf '# CONFIG_FAIR_GROUP_SCHED is not set\n# CONFIG_CFS_BANDWIDTH is not set\n# CONFIG_RT_GROUP_SCHED is not set\n# CONFIG_MEMCG is not set\n# CONFIG_MEMCG_SWAP is not set\n# CONFIG_MEMCG_SWAP_ENABLED is not set\n' >> "$F"
+          echo "Group-sched e MEMCG desabilitados para compatibilidade com E404."
 
       - name: Verificar Droidspaces no defconfig (pré-build)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false')
