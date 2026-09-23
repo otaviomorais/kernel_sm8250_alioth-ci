@@ -164,7 +164,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: kvsnr113/xiaomi_sm8250_kernel_e404
-          ref: staging-bpf
+          ref: ${{ steps.check_upstream.outputs.commit_sha }}
           path: kernel
           fetch-depth: 1
 
@@ -233,14 +233,19 @@ jobs:
           echo "Group-sched desabilitado; perfil '$PROFILE_LABEL' com extensions de MEMCG desabilitadas."
           grep -E '^(# CONFIG_MEMCG|# CONFIG_CGROUP_WRITEBACK|# CONFIG_SLUB_MEMCG)' "$F" || true
 
-      - name: Tornar o perfil MEMCG seguro no Kconfig do E404
+      - name: Aplicar correções do perfil MEMCG seguro no E404
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false') && steps.droidspaces_profile.outputs.label == 'memcg-safe'
         run: |
           set -euo pipefail
-          PATCH="$GITHUB_WORKSPACE/droidspaces/patches/02.e404_memcg_safe_kconfig.patch"
-          (cd kernel && git apply --check "$PATCH")
-          (cd kernel && git apply "$PATCH")
-          echo 'Defaults de MEMCG_KMEM/CGROUP_WRITEBACK alterados para n somente neste perfil.'
+          PATCHES=(
+            "$GITHUB_WORKSPACE/droidspaces/patches/02.e404_memcg_safe_kconfig.patch"
+            "$GITHUB_WORKSPACE/droidspaces/patches/03.e404_fix_memcg_without_kmem.patch"
+          )
+          for patch in "${PATCHES[@]}"; do
+            (cd kernel && git apply --check "$patch")
+            (cd kernel && git apply "$patch")
+          done
+          echo 'Kconfig seguro e guard CONFIG_MEMCG_KMEM do SLUB corrigidos somente neste perfil.'
 
       - name: Verificar Droidspaces no defconfig (pré-build)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false')
@@ -260,7 +265,7 @@ jobs:
               ;;
             memcg-safe)
               grep -q '^CONFIG_MEMCG=y' "$F" || { echo 'FATAL: CONFIG_MEMCG=y ausente no perfil memcg-safe.'; exit 1; }
-              for symbol in MEMCG_KMEM MEMCG_SWAP CGROUP_WRITEBACK; do
+              for symbol in MEMCG_KMEM MEMCG_SWAP CGROUP_WRITEBACK SLUB_MEMCG_SYSFS_ON; do
                 if grep -q "^CONFIG_${symbol}=y" "$F"; then
                   echo "FATAL: extensão perigosa ainda ativa: CONFIG_${symbol}=y"
                   exit 1
@@ -326,7 +331,7 @@ jobs:
               ;;
             memcg-safe)
               grep -q '^CONFIG_MEMCG=y' "$F" || { echo 'FATAL: Kconfig removeu CONFIG_MEMCG=y.'; exit 1; }
-              for symbol in MEMCG_KMEM MEMCG_SWAP CGROUP_WRITEBACK; do
+              for symbol in MEMCG_KMEM MEMCG_SWAP CGROUP_WRITEBACK SLUB_MEMCG_SYSFS_ON; do
                 if grep -q "^CONFIG_${symbol}=y" "$F"; then
                   echo "FATAL: Kconfig reativou CONFIG_${symbol}=y"
                   exit 1
@@ -389,6 +394,8 @@ jobs:
 
       - name: Preparar magiskboot e Gerar boot.img
         if: steps.check_upstream.outputs.should_build == 'true'
+        env:
+          CUSTOM_BOOT_URL: ${{ inputs.custom_boot_url }}
         run: |
           set -e
           mkdir -p boot_pack
@@ -398,10 +405,9 @@ jobs:
           unzip -p magisk.apk lib/x86_64/libmagiskboot.so > magiskboot
           chmod +x magiskboot
 
-          CUSTOM_URL="${{ github.event.inputs.custom_boot_url }}"
-          if [ -n "$CUSTOM_URL" ]; then
-            echo "Baixando boot.img customizado da URL fornecida: $CUSTOM_URL"
-            curl -fsSL -o base_boot.img "$CUSTOM_URL"
+          if [ -n "$CUSTOM_BOOT_URL" ]; then
+            echo "Baixando boot.img customizado da URL fornecida."
+            curl -fsSL -o base_boot.img -- "$CUSTOM_BOOT_URL"
           else
             echo "Baixando boot.img base do Alioth AOSP..."
             curl -fsSL -o boot.zip https://raw.githubusercontent.com/sakana164/Build-Kernel-Action/main/boot.zip
@@ -412,10 +418,15 @@ jobs:
           echo "Descompactando boot.img base..."
           ./magiskboot unpack base_boot.img
 
-          echo "Injetando novo Image e dtb..."
+          echo "Injetando novo Image e device tree..."
           cp ../dist/Image kernel
           if [ -f dtb ]; then
             cp ../dist/dtb dtb
+          elif [ -f dt ]; then
+            cp ../dist/dtb dt
+          else
+            echo 'FATAL: magiskboot não extraiu dtb nem dt do boot.img base.'
+            exit 1
           fi
 
           echo "Reempacotando boot.img..."

@@ -63,8 +63,11 @@ PATCH_FILE="$SCRIPT_DIR/patches/01.fix_restore_cgroup_file_prefix_handling.patch
 if (cd "$KERNEL_DIR" && git apply --check "$PATCH_FILE" 2>/dev/null); then
     (cd "$KERNEL_DIR" && git apply "$PATCH_FILE")
     echo "Patch cgroup aplicado com sucesso!"
+elif grep -Fq 'kernfs_create_link(cgrp->kn, name, kn)' "$KERNEL_DIR/kernel/cgroup/cgroup.c"; then
+    echo "Patch cgroup já está integrado nativamente na árvore."
 else
-    echo "AVISO: Patch cgroup já integrado nativamente na árvore ou não aplicável diretamente. Prosseguindo."
+    echo "FATAL: patch cgroup necessário não pôde ser aplicado nem encontrado na árvore." >&2
+    exit 1
 fi
 
 # 2. Injetar configurações do Droidspaces no defconfig

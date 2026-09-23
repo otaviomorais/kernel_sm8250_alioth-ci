@@ -1,0 +1,11 @@
+--- a/mm/slub.c
++++ b/mm/slub.c
+@@ -4109,7 +4109,7 @@
+ 	return ret;
+ }
+ 
+-#ifdef CONFIG_MEMCG
++#ifdef CONFIG_MEMCG_KMEM
+ static void kmemcg_cache_deact_after_rcu(struct kmem_cache *s)
+ {
+ 	/*
