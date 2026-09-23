@@ -26,13 +26,14 @@ on:
         type: boolean
         default: true
       droidspaces_profile:
-        description: 'Perfil Droidspaces (minimal = baseline booteável; memcg = isolates MEMCG)'
+        description: 'Perfil DroidSpaces (minimal = baseline; memcg = MEMCG básico; memcg-full = MEMCG completo)'
         required: true
         type: choice
         default: minimal
         options:
           - minimal
           - memcg
+          - memcg-full
       custom_boot_url:
         description: 'URL direta opcional de um boot.img base da sua ROM para injetar'
         required: false
@@ -192,6 +193,10 @@ jobs:
               DROIDSPACES_CONFIG='droidspaces/droidspaces-memcg-safe.config'
               PROFILE_LABEL='memcg-safe'
               ;;
+            memcg-full)
+              DROIDSPACES_CONFIG='droidspaces/droidspaces-memcg-full.config'
+              PROFILE_LABEL='memcg-full'
+              ;;
             *)
               echo "FATAL: perfil Droidspaces desconhecido: $REQUESTED_PROFILE" >&2
               exit 1
@@ -224,17 +229,20 @@ jobs:
           sed -i '/CONFIG_FAIR_GROUP_SCHED/d; /CONFIG_CFS_BANDWIDTH/d; /CONFIG_RT_GROUP_SCHED/d' "$F"
           printf '# CONFIG_FAIR_GROUP_SCHED is not set\n# CONFIG_CFS_BANDWIDTH is not set\n# CONFIG_RT_GROUP_SCHED is not set\n' >> "$F"
 
-          # No perfil memcg mantemos apenas o controlador basico de paginas.
-          # Estes sub-controladores alteram SLUB, swap/zRAM e throttling de
-          # writeback; sao desativados para isolar o boot sem remover o memcg.
-          sed -i '/CONFIG_MEMCG_KMEM/d; /CONFIG_MEMCG_SWAP/d; /CONFIG_CGROUP_WRITEBACK/d; /CONFIG_SLUB_MEMCG_SYSFS_ON/d' "$F"
-          printf '# CONFIG_MEMCG_KMEM is not set\n# CONFIG_MEMCG_SWAP is not set\n# CONFIG_MEMCG_SWAP_ENABLED is not set\n# CONFIG_CGROUP_WRITEBACK is not set\n# CONFIG_SLUB_MEMCG_SYSFS_ON is not set\n' >> "$F"
+          if [ "$PROFILE_LABEL" = "memcg-safe" ]; then
+            # No perfil memcg-safe mantemos apenas o controlador basico de paginas.
+            # Estes sub-controladores alteram SLUB, swap/zRAM e throttling de
+            # writeback; sao desativados para isolar o boot sem remover o memcg.
+            sed -i '/CONFIG_MEMCG_KMEM/d; /CONFIG_MEMCG_SWAP/d; /CONFIG_CGROUP_WRITEBACK/d; /CONFIG_SLUB_MEMCG_SYSFS_ON/d' "$F"
+            printf '# CONFIG_MEMCG_KMEM is not set\n# CONFIG_MEMCG_SWAP is not set\n# CONFIG_MEMCG_SWAP_ENABLED is not set\n# CONFIG_CGROUP_WRITEBACK is not set\n# CONFIG_SLUB_MEMCG_SYSFS_ON is not set\n' >> "$F"
+            echo "Group-sched desabilitado; perfil '$PROFILE_LABEL' com extensoes de MEMCG desabilitadas."
+          else
+            echo "Group-sched desabilitado; perfil '$PROFILE_LABEL' preserva as extensoes de MEMCG solicitadas."
+          fi
+          grep -E '^(CONFIG_MEMCG|# CONFIG_MEMCG|# CONFIG_CGROUP_WRITEBACK|# CONFIG_SLUB_MEMCG)' "$F" || true
 
-          echo "Group-sched desabilitado; perfil '$PROFILE_LABEL' com extensions de MEMCG desabilitadas."
-          grep -E '^(# CONFIG_MEMCG|# CONFIG_CGROUP_WRITEBACK|# CONFIG_SLUB_MEMCG)' "$F" || true
-
-      - name: Aplicar correções do perfil MEMCG seguro no E404
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false') && steps.droidspaces_profile.outputs.label == 'memcg-safe'
+      - name: Aplicar correções do perfil MEMCG no E404
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false') && (steps.droidspaces_profile.outputs.label == 'memcg-safe' || steps.droidspaces_profile.outputs.label == 'memcg-full')
         run: |
           set -euo pipefail
           PATCHES=(
@@ -245,7 +253,7 @@ jobs:
             (cd kernel && git apply --check "$patch")
             (cd kernel && git apply "$patch")
           done
-          echo 'Kconfig seguro e guard CONFIG_MEMCG_KMEM do SLUB corrigidos somente neste perfil.'
+          echo 'Defaults/guards de MEMCG corrigidos para o perfil selecionado.'
 
       - name: Verificar Droidspaces no defconfig (pré-build)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false')
@@ -270,6 +278,12 @@ jobs:
                   echo "FATAL: extensão perigosa ainda ativa: CONFIG_${symbol}=y"
                   exit 1
                 fi
+              done
+              ;;
+            memcg-full)
+              grep -q '^CONFIG_MEMCG=y' "$F" || { echo 'FATAL: CONFIG_MEMCG=y ausente no perfil memcg-full.'; exit 1; }
+              for symbol in MEMCG_KMEM MEMCG_SWAP MEMCG_SWAP_ENABLED CGROUP_WRITEBACK SLUB_MEMCG_SYSFS_ON; do
+                grep -q "^CONFIG_${symbol}=y" "$F" || { echo "FATAL: CONFIG_${symbol}=y ausente no perfil memcg-full."; exit 1; }
               done
               ;;
             *)
@@ -336,6 +350,12 @@ jobs:
                   echo "FATAL: Kconfig reativou CONFIG_${symbol}=y"
                   exit 1
                 fi
+              done
+              ;;
+            memcg-full)
+              grep -q '^CONFIG_MEMCG=y' "$F" || { echo 'FATAL: Kconfig removeu CONFIG_MEMCG=y.'; exit 1; }
+              for symbol in MEMCG_KMEM MEMCG_SWAP MEMCG_SWAP_ENABLED CGROUP_WRITEBACK SLUB_MEMCG_SYSFS_ON; do
+                grep -q "^CONFIG_${symbol}=y" "$F" || { echo "FATAL: Kconfig removeu CONFIG_${symbol}=y."; exit 1; }
               done
               ;;
             *)
@@ -468,6 +488,8 @@ jobs:
             DROIDSPACES_STATUS="Desativado"
           elif [ "$PROFILE_LABEL" = "memcg-safe" ]; then
             DROIDSPACES_STATUS="Isolamento MEMCG (MEMCG basico; KMEM, swap-accounting, cgroup writeback e CFS bandwidth desativados)"
+          elif [ "$PROFILE_LABEL" = "memcg-full" ]; then
+            DROIDSPACES_STATUS="MEMCG completo (KMEM, swap-accounting, cgroup writeback e sysfs SLUB ativados; CGROUP_DEVICE/PIDS ainda desativados)"
           else
             DROIDSPACES_STATUS="Minimo (apenas USER_NS; baseline booteavel)"
           fi
