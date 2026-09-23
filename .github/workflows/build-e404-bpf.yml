@@ -25,6 +25,14 @@ on:
         required: false
         type: boolean
         default: true
+      droidspaces_profile:
+        description: 'Perfil Droidspaces (minimal = baseline booteável; memcg = isolates MEMCG)'
+        required: true
+        type: choice
+        default: minimal
+        options:
+          - minimal
+          - memcg
       custom_boot_url:
         description: 'URL direta opcional de um boot.img base da sua ROM para injetar'
         required: false
@@ -168,34 +176,95 @@ jobs:
           echo "Aplicando integração de KernelSU no E404 (SUSFS: ${ENABLE_SUSFS:-true})..."
           bash kernelsu/apply_e404.sh kernel "${ENABLE_SUSFS:-true}" kernel/arch/arm64/configs/vendor/alioth_defconfig
 
+      - name: Selecionar perfil do Droidspaces
+        id: droidspaces_profile
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false')
+        env:
+          REQUESTED_PROFILE: ${{ inputs.droidspaces_profile || 'minimal' }}
+        run: |
+          set -euo pipefail
+          case "$REQUESTED_PROFILE" in
+            minimal)
+              DROIDSPACES_CONFIG='droidspaces/droidspaces-minimal.config'
+              PROFILE_LABEL='minimal'
+              ;;
+            memcg)
+              DROIDSPACES_CONFIG='droidspaces/droidspaces-memcg-safe.config'
+              PROFILE_LABEL='memcg-safe'
+              ;;
+            *)
+              echo "FATAL: perfil Droidspaces desconhecido: $REQUESTED_PROFILE" >&2
+              exit 1
+              ;;
+          esac
+          echo "Perfil Droidspaces: $PROFILE_LABEL ($DROIDSPACES_CONFIG)"
+          echo "config=$DROIDSPACES_CONFIG" >> "$GITHUB_OUTPUT"
+          echo "label=$PROFILE_LABEL" >> "$GITHUB_OUTPUT"
+          echo "DROIDSPACES_PROFILE=$PROFILE_LABEL" >> "$GITHUB_ENV"
+
       - name: Integrar Suporte ao Droidspaces
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false')
+        env:
+          DROIDSPACES_CONFIG: ${{ steps.droidspaces_profile.outputs.config }}
+          PROFILE_LABEL: ${{ steps.droidspaces_profile.outputs.label }}
         run: |
-          set -e
-          echo "Aplicando integração de Droidspaces (modo MINIMO: apenas USER_NS)..."
-          bash droidspaces/apply.sh kernel kernel/arch/arm64/configs/vendor/alioth_defconfig droidspaces/droidspaces-minimal.config
+          set -euo pipefail
+          echo "Aplicando perfil Droidspaces '$PROFILE_LABEL'..."
+          bash droidspaces/apply.sh kernel kernel/arch/arm64/configs/vendor/alioth_defconfig "$DROIDSPACES_CONFIG"
 
-      - name: Ajustar Droidspaces para E404 (sem group-sched)
+      - name: Ajustar Droidspaces para E404 (scheduler e extensions de MEMCG)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false')
+        env:
+          PROFILE_LABEL: ${{ steps.droidspaces_profile.outputs.label }}
         run: |
-          set -e
+          set -euo pipefail
           # O scheduler EEVDF/CASS do E404 nao compila com FAIR_GROUP_SCHED/CFS_BANDWIDTH
           # (fair.c usa simbolos removidos: qcfs_rq, pelt_clock_throttled).
-          # DIAGNOSTICO: MEMCG religado de proposito para capturar o erro real de build.
           F=kernel/arch/arm64/configs/vendor/alioth_defconfig
           sed -i '/CONFIG_FAIR_GROUP_SCHED/d; /CONFIG_CFS_BANDWIDTH/d; /CONFIG_RT_GROUP_SCHED/d' "$F"
           printf '# CONFIG_FAIR_GROUP_SCHED is not set\n# CONFIG_CFS_BANDWIDTH is not set\n# CONFIG_RT_GROUP_SCHED is not set\n' >> "$F"
-          echo "Group-sched desabilitado; MEMCG mantido LIGADO (diagnostico)."
-          grep -E "^CONFIG_MEMCG" "$F" || true
+
+          # No perfil memcg mantemos apenas o controlador basico de paginas.
+          # Estes sub-controladores alteram SLUB, swap/zRAM e throttling de
+          # writeback; sao desativados para isolar o boot sem remover o memcg.
+          sed -i '/CONFIG_MEMCG_KMEM/d; /CONFIG_MEMCG_SWAP/d; /CONFIG_CGROUP_WRITEBACK/d; /CONFIG_SLUB_MEMCG_SYSFS_ON/d' "$F"
+          printf '# CONFIG_MEMCG_KMEM is not set\n# CONFIG_MEMCG_SWAP is not set\n# CONFIG_MEMCG_SWAP_ENABLED is not set\n# CONFIG_CGROUP_WRITEBACK is not set\n# CONFIG_SLUB_MEMCG_SYSFS_ON is not set\n' >> "$F"
+
+          echo "Group-sched desabilitado; perfil '$PROFILE_LABEL' com extensions de MEMCG desabilitadas."
+          grep -E '^(# CONFIG_MEMCG|# CONFIG_CGROUP_WRITEBACK|# CONFIG_SLUB_MEMCG)' "$F" || true
 
       - name: Verificar Droidspaces no defconfig (pré-build)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false')
+        env:
+          PROFILE_LABEL: ${{ steps.droidspaces_profile.outputs.label }}
         run: |
-          set -e
-          echo "Verificando injeção Droidspaces em kernel/arch/arm64/configs/vendor/alioth_defconfig..."
-          grep -q "^CONFIG_USER_NS=y" kernel/arch/arm64/configs/vendor/alioth_defconfig || { echo "FATAL: CONFIG_USER_NS=y ausente no defconfig. O apply.sh falhou."; exit 1; }
-          grep -E "^CONFIG_(NAMESPACES|PID_NS|UTS_NS|IPC_NS|NET_NS|OVERLAY_FS|BINFMT_MISC|CFS_BANDWIDTH)=y" kernel/arch/arm64/configs/vendor/alioth_defconfig || true
-          echo "Droidspaces OK no defconfig."
+          set -euo pipefail
+          F=kernel/arch/arm64/configs/vendor/alioth_defconfig
+          echo "Verificando perfil '$PROFILE_LABEL' em $F..."
+          grep -q '^CONFIG_USER_NS=y' "$F" || { echo 'FATAL: CONFIG_USER_NS=y ausente no defconfig.'; exit 1; }
+          case "$PROFILE_LABEL" in
+            minimal)
+              if grep -q '^CONFIG_MEMCG=y' "$F"; then
+                echo 'FATAL: o perfil minimal nao pode ativar MEMCG.'
+                exit 1
+              fi
+              ;;
+            memcg-safe)
+              grep -q '^CONFIG_MEMCG=y' "$F" || { echo 'FATAL: CONFIG_MEMCG=y ausente no perfil memcg-safe.'; exit 1; }
+              for symbol in MEMCG_KMEM MEMCG_SWAP CGROUP_WRITEBACK; do
+                if grep -q "^CONFIG_${symbol}=y" "$F"; then
+                  echo "FATAL: extensão perigosa ainda ativa: CONFIG_${symbol}=y"
+                  exit 1
+                fi
+              done
+              ;;
+            *)
+              echo "FATAL: perfil invalido: $PROFILE_LABEL" >&2
+              exit 1
+              ;;
+          esac
+          grep -E '^(CONFIG_(USER_NS|MEMCG|NAMESPACES|PID_NS|UTS_NS|IPC_NS|NET_NS)|# CONFIG_(MEMCG_KMEM|MEMCG_SWAP|CGROUP_WRITEBACK))' "$F" || true
+          echo "Perfil Droidspaces OK no defconfig."
 
       - name: Aplicar Otimizações de Kernel (BBR, ZSTD, Kyber, PSI)
         if: steps.check_upstream.outputs.should_build == 'true'
@@ -232,12 +301,36 @@ jobs:
 
       - name: Verificar Droidspaces no .config final
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false')
+        env:
+          PROFILE_LABEL: ${{ steps.droidspaces_profile.outputs.label }}
         run: |
-          set -e
-          echo "Verificando suporte Droidspaces no .config final..."
-          grep -q "^CONFIG_USER_NS=y" kernel/out/.config || { echo "FATAL: CONFIG_USER_NS=y ausente no .config final."; grep -E "USER_NS|NAMESPACES" kernel/out/.config || true; exit 1; }
-          grep -E "^CONFIG_(NAMESPACES|PID_NS|UTS_NS|IPC_NS|NET_NS|OVERLAY_FS|BINFMT_MISC|CFS_BANDWIDTH|CGROUPS|SECCOMP)=y" kernel/out/.config || true
-          echo "Suporte total ao Droidspaces confirmado no .config."
+          set -euo pipefail
+          F=kernel/out/.config
+          echo "Verificando perfil '$PROFILE_LABEL' no .config final..."
+          grep -q '^CONFIG_USER_NS=y' "$F" || { echo 'FATAL: CONFIG_USER_NS=y ausente no .config final.'; exit 1; }
+          case "$PROFILE_LABEL" in
+            minimal)
+              if grep -q '^CONFIG_MEMCG=y' "$F"; then
+                echo 'FATAL: o perfil minimal terminou com MEMCG ligado.'
+                exit 1
+              fi
+              ;;
+            memcg-safe)
+              grep -q '^CONFIG_MEMCG=y' "$F" || { echo 'FATAL: Kconfig removeu CONFIG_MEMCG=y.'; exit 1; }
+              for symbol in MEMCG_KMEM MEMCG_SWAP CGROUP_WRITEBACK; do
+                if grep -q "^CONFIG_${symbol}=y" "$F"; then
+                  echo "FATAL: Kconfig reativou CONFIG_${symbol}=y"
+                  exit 1
+                fi
+              done
+              ;;
+            *)
+              echo "FATAL: perfil invalido: $PROFILE_LABEL" >&2
+              exit 1
+              ;;
+          esac
+          grep -E '^(CONFIG_(USER_NS|MEMCG|NAMESPACES|PID_NS|UTS_NS|IPC_NS|NET_NS|OVERLAY_FS|CGROUPS|SECCOMP)|# CONFIG_(MEMCG_KMEM|MEMCG_SWAP|CGROUP_WRITEBACK))' "$F" || true
+          echo "Perfil '$PROFILE_LABEL' confirmado no .config final."
 
       - name: Compilar Kernel (Image, dtbs, dtbo.img)
         if: steps.check_upstream.outputs.should_build == 'true'
@@ -270,14 +363,15 @@ jobs:
         run: |
           set -e
           SHORT_SHA="${{ steps.check_upstream.outputs.short_sha }}"
+          PROFILE_LABEL="${DROIDSPACES_PROFILE:-off}"
           AK3_DIR="ak3_pack"
           cp -r anykernel "$AK3_DIR"
           cp dist/Image "$AK3_DIR/Image"
           cp dist/dtb "$AK3_DIR/dtb"
           cp dist/dtbo.img "$AK3_DIR/dtbo.img"
           chmod 755 "$AK3_DIR/META-INF/com/google/android/update-binary"
-          
-          ZIP_NAME="AnyKernel3-Alioth-E404-BPF-${SHORT_SHA}.zip"
+
+          ZIP_NAME="AnyKernel3-Alioth-E404-BPF-${SHORT_SHA}-${PROFILE_LABEL}.zip"
           cd "$AK3_DIR"
           zip -r -X "../dist/$ZIP_NAME" .
           cd ..
@@ -325,7 +419,7 @@ jobs:
         if: steps.check_upstream.outputs.should_build == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: alioth-e404-bpf-${{ steps.check_upstream.outputs.short_sha }}
+          name: alioth-e404-bpf-${{ steps.check_upstream.outputs.short_sha }}-${{ steps.droidspaces_profile.outputs.label || 'off' }}
           path: dist/
           retention-days: 14
 
@@ -338,8 +432,9 @@ jobs:
           SHORT_SHA="${{ steps.check_upstream.outputs.short_sha }}"
           FULL_SHA="${{ steps.check_upstream.outputs.commit_sha }}"
           COMMIT_MSG="${{ steps.check_upstream.outputs.commit_msg }}"
+          PROFILE_LABEL="${DROIDSPACES_PROFILE:-off}"
           BUILD_DATE=$(date -u +'%Y-%m-%d')
-          TAG_NAME="e404-bpf-${BUILD_DATE}-${SHORT_SHA}"
+          TAG_NAME="e404-bpf-${BUILD_DATE}-${SHORT_SHA}-${PROFILE_LABEL}"
 
           KSU_STATUS="Ativado (KernelSU-Next + SUSFS v1.5.5 completo: SUS Maps, Try Umount, Open Redirect, Auto Try Umount Bind, Hide Symbols, OverlayFS Auto Kstat)"
           if [ "${{ github.event.inputs.enable_ksu }}" = "false" ]; then
@@ -348,9 +443,12 @@ jobs:
             KSU_STATUS="Ativado (KernelSU-Next sem SUSFS)"
           fi
 
-          DROIDSPACES_STATUS="Minimo (apenas USER_NS - modo teste de boot; sem CFS Bandwidth/MEMCG - incompativeis com scheduler E404)"
           if [ "${{ github.event.inputs.enable_droidspaces }}" = "false" ]; then
             DROIDSPACES_STATUS="Desativado"
+          elif [ "$PROFILE_LABEL" = "memcg-safe" ]; then
+            DROIDSPACES_STATUS="Isolamento MEMCG (MEMCG basico; KMEM, swap-accounting, cgroup writeback e CFS bandwidth desativados)"
+          else
+            DROIDSPACES_STATUS="Minimo (apenas USER_NS; baseline booteavel)"
           fi
 
           cat <<EOF > release_notes.md
@@ -370,6 +468,7 @@ jobs:
           - **Upstream Commit:** [\`${SHORT_SHA}\`](https://github.com/kvsnr113/xiaomi_sm8250_kernel_e404/commit/${FULL_SHA})
           - **Mensagem Upstream:** ${COMMIT_MSG}
           - **Branch Base:** \`staging-bpf\`
+          - **Perfil Droidspaces:** \`${PROFILE_LABEL}\`
           - **Toolchain:** ZyC-Clang 16 (ThinLTO + CFI + ccache + Cortex-A77 tune)
 
           ---
@@ -393,7 +492,7 @@ jobs:
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             echo "Release $TAG_NAME já existe. Atualizando notas e substituindo arquivos..."
             gh release edit "$TAG_NAME" \
-              --title "Alioth Kernel E404 BPF (${BUILD_DATE} - ${SHORT_SHA})" \
+              --title "Alioth Kernel E404 BPF (${BUILD_DATE} - ${SHORT_SHA} - ${PROFILE_LABEL})" \
               --notes-file release_notes.md
             gh release upload "$TAG_NAME" \
               dist/"$ZIP_NAME" \
@@ -407,6 +506,6 @@ jobs:
               dist/boot.img \
               dist/dtbo.img \
               dist/Image \
-              --title "Alioth Kernel E404 BPF (${BUILD_DATE} - ${SHORT_SHA})" \
+              --title "Alioth Kernel E404 BPF (${BUILD_DATE} - ${SHORT_SHA} - ${PROFILE_LABEL})" \
               --notes-file release_notes.md
           fi
