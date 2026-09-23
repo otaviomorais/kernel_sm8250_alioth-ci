@@ -26,7 +26,7 @@ on:
         type: boolean
         default: true
       droidspaces_profile:
-        description: 'Perfil DroidSpaces (minimal; memcg; memcg-full; full-pids = bloco CGROUP_PIDS)'
+        description: 'Perfil DroidSpaces (minimal; memcg; memcg-full; full-pids; full-device = bloco CGROUP_DEVICE)'
         required: true
         type: choice
         default: minimal
@@ -35,6 +35,7 @@ on:
           - memcg
           - memcg-full
           - memcg-full-pids
+          - memcg-full-device
       custom_boot_url:
         description: 'URL direta opcional de um boot.img base da sua ROM para injetar'
         required: false
@@ -202,6 +203,10 @@ jobs:
               DROIDSPACES_CONFIG='droidspaces/droidspaces-memcg-full-pids.config'
               PROFILE_LABEL='memcg-full-pids'
               ;;
+            memcg-full-device)
+              DROIDSPACES_CONFIG='droidspaces/droidspaces-memcg-full-device.config'
+              PROFILE_LABEL='memcg-full-device'
+              ;;
             *)
               echo "FATAL: perfil Droidspaces desconhecido: $REQUESTED_PROFILE" >&2
               exit 1
@@ -247,7 +252,7 @@ jobs:
           grep -E '^(CONFIG_MEMCG|# CONFIG_MEMCG|# CONFIG_CGROUP_WRITEBACK|# CONFIG_SLUB_MEMCG)' "$F" || true
 
       - name: Aplicar correções do perfil MEMCG no E404
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false') && (steps.droidspaces_profile.outputs.label == 'memcg-safe' || steps.droidspaces_profile.outputs.label == 'memcg-full' || steps.droidspaces_profile.outputs.label == 'memcg-full-pids')
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false') && (steps.droidspaces_profile.outputs.label == 'memcg-safe' || steps.droidspaces_profile.outputs.label == 'memcg-full' || steps.droidspaces_profile.outputs.label == 'memcg-full-pids' || steps.droidspaces_profile.outputs.label == 'memcg-full-device')
         env:
           PROFILE_LABEL: ${{ steps.droidspaces_profile.outputs.label }}
         run: |
@@ -307,6 +312,12 @@ jobs:
                 echo 'FATAL: CGROUP_DEVICE nao deve ser ativado no bloco PIDS.'
                 exit 1
               fi
+              ;;
+            memcg-full-device)
+              grep -q '^CONFIG_MEMCG=y' "$F" || { echo 'FATAL: CONFIG_MEMCG=y ausente no perfil memcg-full-device.'; exit 1; }
+              for symbol in MEMCG_KMEM MEMCG_SWAP MEMCG_SWAP_ENABLED CGROUP_WRITEBACK SLUB_MEMCG_SYSFS_ON CGROUP_PIDS CGROUP_DEVICE; do
+                grep -q "^CONFIG_${symbol}=y" "$F" || { echo "FATAL: CONFIG_${symbol}=y ausente no perfil memcg-full-device."; exit 1; }
+              done
               ;;
             *)
               echo "FATAL: perfil invalido: $PROFILE_LABEL" >&2
@@ -389,6 +400,12 @@ jobs:
                 echo 'FATAL: CGROUP_DEVICE nao deve ser ativado no bloco PIDS.'
                 exit 1
               fi
+              ;;
+            memcg-full-device)
+              grep -q '^CONFIG_MEMCG=y' "$F" || { echo 'FATAL: Kconfig removeu CONFIG_MEMCG=y.'; exit 1; }
+              for symbol in MEMCG_KMEM MEMCG_SWAP MEMCG_SWAP_ENABLED CGROUP_WRITEBACK SLUB_MEMCG_SYSFS_ON CGROUP_PIDS CGROUP_DEVICE; do
+                grep -q "^CONFIG_${symbol}=y" "$F" || { echo "FATAL: Kconfig removeu CONFIG_${symbol}=y."; exit 1; }
+              done
               ;;
             *)
               echo "FATAL: perfil invalido: $PROFILE_LABEL" >&2
@@ -524,6 +541,8 @@ jobs:
             DROIDSPACES_STATUS="MEMCG completo (KMEM, swap-accounting, cgroup writeback e sysfs SLUB ativados; CGROUP_DEVICE/PIDS ainda desativados)"
           elif [ "$PROFILE_LABEL" = "memcg-full-pids" ]; then
             DROIDSPACES_STATUS="Bloco 1: MEMCG completo + CGROUP_PIDS; CGROUP_DEVICE e demais blocos ainda desativados"
+          elif [ "$PROFILE_LABEL" = "memcg-full-device" ]; then
+            DROIDSPACES_STATUS="Bloco 2: MEMCG completo + CGROUP_PIDS + CGROUP_DEVICE; demais blocos ainda desativados"
           else
             DROIDSPACES_STATUS="Minimo (apenas USER_NS; baseline booteavel)"
           fi
