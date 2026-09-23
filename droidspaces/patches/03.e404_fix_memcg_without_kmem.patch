@@ -9,3 +9,14 @@
  static void kmemcg_cache_deact_after_rcu(struct kmem_cache *s)
  {
  	/*
+--- a/mm/slab_common.c
++++ b/mm/slab_common.c
+@@ -1447,7 +1447,7 @@
+ 	mutex_unlock(&slab_mutex);
+ }
+ 
+-#if defined(CONFIG_MEMCG)
++#if defined(CONFIG_MEMCG_KMEM)
+ void *memcg_slab_start(struct seq_file *m, loff_t *pos)
+ {
+ 	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
