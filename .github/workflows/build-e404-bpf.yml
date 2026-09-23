@@ -243,12 +243,19 @@ jobs:
 
       - name: Aplicar correções do perfil MEMCG no E404
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false') && (steps.droidspaces_profile.outputs.label == 'memcg-safe' || steps.droidspaces_profile.outputs.label == 'memcg-full')
+        env:
+          PROFILE_LABEL: ${{ steps.droidspaces_profile.outputs.label }}
         run: |
           set -euo pipefail
           PATCHES=(
-            "$GITHUB_WORKSPACE/droidspaces/patches/02.e404_memcg_safe_kconfig.patch"
             "$GITHUB_WORKSPACE/droidspaces/patches/03.e404_fix_memcg_without_kmem.patch"
           )
+          if [ "$PROFILE_LABEL" = "memcg-safe" ]; then
+            PATCHES=(
+              "$GITHUB_WORKSPACE/droidspaces/patches/02.e404_memcg_safe_kconfig.patch"
+              "$GITHUB_WORKSPACE/droidspaces/patches/03.e404_fix_memcg_without_kmem.patch"
+            )
+          fi
           for patch in "${PATCHES[@]}"; do
             (cd kernel && git apply --check "$patch")
             (cd kernel && git apply "$patch")
