@@ -1,0 +1,23 @@
+diff --git a/init/Kconfig b/init/Kconfig
+index 0000000..1111111 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -966,8 +966,7 @@ config MEMCG_SWAP_ENABLED
+ config MEMCG_KMEM
+ 	bool
+ 	depends on MEMCG && !SLOB
+-	default y
+ 
+ config BLK_CGROUP
+ 	bool "IO controller"
+@@ -1000,8 +999,7 @@ config DEBUG_BLK_CGROUP
+ 	  per-group I/O throttling. See blkio-controller.txt for more
+ 	  information.
+ 
+ config CGROUP_WRITEBACK
+ 	bool
+ 	depends on MEMCG && BLK_CGROUP
+-	default y
+ 
+ menuconfig CGROUP_SCHED
+ 	bool "CPU controller"

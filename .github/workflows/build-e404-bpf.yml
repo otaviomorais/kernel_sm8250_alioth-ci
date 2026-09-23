@@ -233,6 +233,15 @@ jobs:
           echo "Group-sched desabilitado; perfil '$PROFILE_LABEL' com extensions de MEMCG desabilitadas."
           grep -E '^(# CONFIG_MEMCG|# CONFIG_CGROUP_WRITEBACK|# CONFIG_SLUB_MEMCG)' "$F" || true
 
+      - name: Tornar o perfil MEMCG seguro no Kconfig do E404
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false') && steps.droidspaces_profile.outputs.label == 'memcg-safe'
+        run: |
+          set -euo pipefail
+          PATCH="$GITHUB_WORKSPACE/droidspaces/patches/02.e404_memcg_safe_kconfig.patch"
+          (cd kernel && git apply --check "$PATCH")
+          (cd kernel && git apply "$PATCH")
+          echo 'Defaults de MEMCG_KMEM/CGROUP_WRITEBACK alterados para n somente neste perfil.'
+
       - name: Verificar Droidspaces no defconfig (pré-build)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false')
         env:
