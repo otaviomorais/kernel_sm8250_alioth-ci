@@ -422,11 +422,12 @@ jobs:
           cp ../dist/Image kernel
           if [ -f dtb ]; then
             cp ../dist/dtb dtb
+            echo 'Device tree standalone (dtb) substituído.'
           elif [ -f dt ]; then
             cp ../dist/dtb dt
+            echo 'Device tree legado (dt) substituído.'
           else
-            echo 'FATAL: magiskboot não extraiu dtb nem dt do boot.img base.'
-            exit 1
+            echo 'boot.img base não possui dtb/dt standalone; preservando o formato original.'
           fi
 
           echo "Reempacotando boot.img..."
