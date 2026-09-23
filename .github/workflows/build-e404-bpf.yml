@@ -26,7 +26,7 @@ on:
         type: boolean
         default: true
       droidspaces_profile:
-        description: 'Perfil DroidSpaces (minimal = baseline; memcg = MEMCG básico; memcg-full = MEMCG completo)'
+        description: 'Perfil DroidSpaces (minimal; memcg; memcg-full; full-pids = bloco CGROUP_PIDS)'
         required: true
         type: choice
         default: minimal
@@ -34,6 +34,7 @@ on:
           - minimal
           - memcg
           - memcg-full
+          - memcg-full-pids
       custom_boot_url:
         description: 'URL direta opcional de um boot.img base da sua ROM para injetar'
         required: false
@@ -197,6 +198,10 @@ jobs:
               DROIDSPACES_CONFIG='droidspaces/droidspaces-memcg-full.config'
               PROFILE_LABEL='memcg-full'
               ;;
+            memcg-full-pids)
+              DROIDSPACES_CONFIG='droidspaces/droidspaces-memcg-full-pids.config'
+              PROFILE_LABEL='memcg-full-pids'
+              ;;
             *)
               echo "FATAL: perfil Droidspaces desconhecido: $REQUESTED_PROFILE" >&2
               exit 1
@@ -242,7 +247,7 @@ jobs:
           grep -E '^(CONFIG_MEMCG|# CONFIG_MEMCG|# CONFIG_CGROUP_WRITEBACK|# CONFIG_SLUB_MEMCG)' "$F" || true
 
       - name: Aplicar correções do perfil MEMCG no E404
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false') && (steps.droidspaces_profile.outputs.label == 'memcg-safe' || steps.droidspaces_profile.outputs.label == 'memcg-full')
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false') && (steps.droidspaces_profile.outputs.label == 'memcg-safe' || steps.droidspaces_profile.outputs.label == 'memcg-full' || steps.droidspaces_profile.outputs.label == 'memcg-full-pids')
         env:
           PROFILE_LABEL: ${{ steps.droidspaces_profile.outputs.label }}
         run: |
@@ -292,6 +297,16 @@ jobs:
               for symbol in MEMCG_KMEM MEMCG_SWAP MEMCG_SWAP_ENABLED CGROUP_WRITEBACK SLUB_MEMCG_SYSFS_ON; do
                 grep -q "^CONFIG_${symbol}=y" "$F" || { echo "FATAL: CONFIG_${symbol}=y ausente no perfil memcg-full."; exit 1; }
               done
+              ;;
+            memcg-full-pids)
+              grep -q '^CONFIG_MEMCG=y' "$F" || { echo 'FATAL: CONFIG_MEMCG=y ausente no perfil memcg-full-pids.'; exit 1; }
+              for symbol in MEMCG_KMEM MEMCG_SWAP MEMCG_SWAP_ENABLED CGROUP_WRITEBACK SLUB_MEMCG_SYSFS_ON CGROUP_PIDS; do
+                grep -q "^CONFIG_${symbol}=y" "$F" || { echo "FATAL: CONFIG_${symbol}=y ausente no perfil memcg-full-pids."; exit 1; }
+              done
+              if grep -q '^CONFIG_CGROUP_DEVICE=y' "$F"; then
+                echo 'FATAL: CGROUP_DEVICE nao deve ser ativado no bloco PIDS.'
+                exit 1
+              fi
               ;;
             *)
               echo "FATAL: perfil invalido: $PROFILE_LABEL" >&2
@@ -364,6 +379,16 @@ jobs:
               for symbol in MEMCG_KMEM MEMCG_SWAP MEMCG_SWAP_ENABLED CGROUP_WRITEBACK SLUB_MEMCG_SYSFS_ON; do
                 grep -q "^CONFIG_${symbol}=y" "$F" || { echo "FATAL: Kconfig removeu CONFIG_${symbol}=y."; exit 1; }
               done
+              ;;
+            memcg-full-pids)
+              grep -q '^CONFIG_MEMCG=y' "$F" || { echo 'FATAL: Kconfig removeu CONFIG_MEMCG=y.'; exit 1; }
+              for symbol in MEMCG_KMEM MEMCG_SWAP MEMCG_SWAP_ENABLED CGROUP_WRITEBACK SLUB_MEMCG_SYSFS_ON CGROUP_PIDS; do
+                grep -q "^CONFIG_${symbol}=y" "$F" || { echo "FATAL: Kconfig removeu CONFIG_${symbol}=y."; exit 1; }
+              done
+              if grep -q '^CONFIG_CGROUP_DEVICE=y' "$F"; then
+                echo 'FATAL: CGROUP_DEVICE nao deve ser ativado no bloco PIDS.'
+                exit 1
+              fi
               ;;
             *)
               echo "FATAL: perfil invalido: $PROFILE_LABEL" >&2
@@ -497,6 +522,8 @@ jobs:
             DROIDSPACES_STATUS="Isolamento MEMCG (MEMCG basico; KMEM, swap-accounting, cgroup writeback e CFS bandwidth desativados)"
           elif [ "$PROFILE_LABEL" = "memcg-full" ]; then
             DROIDSPACES_STATUS="MEMCG completo (KMEM, swap-accounting, cgroup writeback e sysfs SLUB ativados; CGROUP_DEVICE/PIDS ainda desativados)"
+          elif [ "$PROFILE_LABEL" = "memcg-full-pids" ]; then
+            DROIDSPACES_STATUS="Bloco 1: MEMCG completo + CGROUP_PIDS; CGROUP_DEVICE e demais blocos ainda desativados"
           else
             DROIDSPACES_STATUS="Minimo (apenas USER_NS; baseline booteavel)"
           fi
