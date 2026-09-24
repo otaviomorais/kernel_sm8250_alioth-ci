@@ -156,7 +156,7 @@ jobs:
           path: ~/.ccache
           key: ${{ runner.os }}-kernel-ccache-${{ steps.droidspaces_profile.outputs.profile }}-${{ steps.check_upstream.outputs.short_sha }}
           restore-keys: |
-            ${{ runner.os }}-kernel-ccache-
+            ${{ runner.os }}-kernel-ccache-${{ steps.droidspaces_profile.outputs.profile }}-
 
       - name: Inicializar ccache
         if: steps.check_upstream.outputs.should_build == 'true'
