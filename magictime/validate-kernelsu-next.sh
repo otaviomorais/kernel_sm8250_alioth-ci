@@ -44,10 +44,21 @@ require_equal KSU_SUSFS_OPEN_REDIRECT
 require_equal KSU_SUSFS_SUS_MAPS
 require_equal FHANDLE
 
+if grep -q '^CONFIG_KSU_KPROBES_HOOK=y$' "$CONFIG"; then
+    echo "error: CONFIG_KSU_KPROBES_HOOK must remain disabled for the MagicTime hook patch" >&2
+    exit 1
+fi
+
 if [[ ! -f "$KERNEL/drivers/kernelsu/ksu.c" || ! -f "$KERNEL/drivers/kernelsu/Makefile" ]]; then
     echo "error: KernelSU-Next sources are missing" >&2
     exit 1
 fi
+for source in fs/susfs.c fs/sus_su.c include/linux/susfs.h include/linux/susfs_def.h; do
+    if [[ ! -f "$KERNEL/$source" ]]; then
+        echo "error: SUSFS asset is missing: $source" >&2
+        exit 1
+    fi
+done
 if [[ -e "$KERNEL/KernelSU" ]]; then
     echo "error: embedded MagicTime KernelSU remains" >&2
     exit 1

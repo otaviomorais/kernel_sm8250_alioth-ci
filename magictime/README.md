@@ -21,15 +21,18 @@ A source MagicTime contém um submódulo `KernelSU` e um symlink
 `drivers/kernelsu` para essa cópia. O pipeline:
 
 1. checkout do commit MagicTime sem inicializar o submódulo;
-2. remove `KernelSU`, `drivers/kernelsu`, a fiação KSU e os hooks KSU manuais
-   da própria source usando `remove-magictime-kernelsu-hooks.patch`;
-3. copia o KernelSU-Next e os arquivos SUSFS que estão em `kernelsu/`;
-4. aplica `magictime/patches/ksu-susfs-magictime.patch`, adaptado à API/filesystem
-   da source MagicTime (a ordem está em `magictime/patches/series-ksu-next`);
+2. remove `KernelSU`, `drivers/kernelsu`, a configuração/registro antigos e
+   substitui a integração por KernelSU-Next, preservando e adaptando os hooks
+   necessários da própria source;
+3. copia os assets KernelSU-Next e SUSFS que estão em `kernelsu/`;
+4. aplica `magictime/patches/ksu-susfs-magictime.patch`, adaptado à baseline
+   MagicTime 4.19; o patch é strict (`git apply --check`, sem `git apply -3`) e
+   exclui hunks AOSP16 não relacionados;
 5. injeta as opções KernelSU-Next/SUSFS no defconfig e valida o `.config` final.
 
-O `kernelsu/apply.sh` continua compatível com o workflow estável: o quarto
-argumento é opcional e, quando ausente, usa o patch original do `main`.
+A ordem ativa está em `magictime/patches/series-ksu-next`. O
+`kernelsu/apply.sh` do `main` permanece inalterado; o wrapper MagicTime usa os
+mesmos assets diretamente e o patch adaptado.
 
 ## Gate de CI
 
@@ -55,6 +58,17 @@ antiga `magictime/patches/0001-walt-eevdf-cass-core.patch` e os scripts
 material histórico do port AOSP16 e não são chamados pelo workflow ativo.
 
 `NTSYNC` continua fora do escopo deste workflow.
+
+## Limitações conhecidas da integração
+
+- `CONFIG_KSU_SUSFS_SUS_MAPS=y` é mantido para paridade com o `main`, mas a
+  versão SUSFS integrada usa o hook de spoof de kstat; não há uma estrutura
+  independente de filtragem de maps.
+- `fs/sus_su.c` é copiado para paridade dos assets, mas não é compilado porque
+  `CONFIG_KSU_SUSFS_SUS_SU` e `include/linux/sus_su.h` não fazem parte do
+  conjunto KernelSU-Next/SUSFS atual.
+- `CONFIG_KSU_KPROBES_HOOK` fica explicitamente desabilitado; o patch fornece
+  os hooks manuais para a baseline MagicTime.
 
 ## Promoção
 
