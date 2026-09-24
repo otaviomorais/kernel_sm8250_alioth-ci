@@ -1,0 +1,67 @@
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index c08f8e2b1e5767262abff0e741d21e64eadcaa14..04fe9f7eb4c1bbbf5ccd6e1e5686b6a46b114271 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -744,7 +744,11 @@ struct task_struct {
+ 	 */
+ 	struct thread_info		thread_info;
+ #endif
+-	unsigned int			__state;
++	union {
++		unsigned int			__state;
++		/* AOSP16 source-compatibility alias for the old task->state. */
++		unsigned int			state;
++	};
+ 
+ 	/*
+ 	 * This begins the randomizable portion of task_struct. Only
+@@ -827,7 +831,11 @@ struct task_struct {
+ 	unsigned long			max_allowed_capacity;
+ 	int				nr_cpus_allowed;
+ 	const cpumask_t			*cpus_ptr;
+-	cpumask_t			cpus_mask;
++	union {
++		cpumask_t			cpus_mask;
++		/* AOSP16 source-compatibility alias for task->cpus_allowed. */
++		cpumask_t			cpus_allowed;
++	};
+ 	cpumask_t			cpus_requested;
+ 	void				*migration_pending;
+ #ifdef CONFIG_SMP
+diff --git a/include/linux/sched/signal.h b/include/linux/sched/signal.h
+index 332fa418c4f011400fde3051bbf4763c189dcb95..79ece5c333dccdc011d35467fff251735c8b0e4b 100644
+--- a/include/linux/sched/signal.h
++++ b/include/linux/sched/signal.h
+@@ -378,6 +378,18 @@ static inline int signal_pending_state(unsigned int state, struct task_struct *p
+ 	return (state & TASK_INTERRUPTIBLE) || __fatal_signal_pending(p);
+ }
+ 
++/*
++ * This should only be used in fault handlers to decide whether we should stop
++ * the current fault routine to handle a pending signal instead.
++ */
++static inline bool fault_signal_pending(vm_fault_t fault_flags,
++					struct pt_regs *regs)
++{
++	return unlikely((fault_flags & VM_FAULT_RETRY) &&
++			(fatal_signal_pending(current) ||
++			 (user_mode(regs) && signal_pending(current))));
++}
++
+ /*
+  * Reevaluate whether the task has signals pending delivery.
+  * Wake the task if so.
+diff --git a/init/init_task.c b/init/init_task.c
+index 4e0d5431d719129cd37dcd4137fa505155721a70..82b02d5785f6bd3a16308f767f63b7d91abb4338 100644
+--- a/init/init_task.c
++++ b/init/init_task.c
+@@ -72,7 +72,9 @@ struct task_struct init_task
+ 	.static_prio	= MAX_PRIO - 20,
+ 	.normal_prio	= MAX_PRIO - 20,
+ 	.policy		= SCHED_NORMAL,
++	.cpus_ptr	= &init_task.cpus_mask,
+ 	.cpus_allowed	= CPU_MASK_ALL,
++	.max_allowed_capacity = SCHED_CAPACITY_SCALE,
+ 	.nr_cpus_allowed= NR_CPUS,
+ 	.cpus_requested	= CPU_MASK_ALL,
+ 	.mm		= NULL,

@@ -41,5 +41,9 @@
 #   Restores the AOSP16 PF_MEMSTALL task flag required by the standard PSI
 #   memstall accounting path.
 #
+# 0010-aosp16-task-abi-bridge.patch
+#   Adds source-compatible task state/cpumask aliases and the AOSP16 fault
+#   signal helper while retaining the MagicTime scheduler field names.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.
