@@ -84,6 +84,15 @@ jobs:
           fetch-depth: 1
           submodules: false
 
+      - name: Configurar ferramentas de dtbo (mkdtboimg)
+        run: |
+          set -e
+          sudo ln -sf /usr/bin/python3 /usr/bin/python2
+          mkdir -p kernel/scripts/ufdt/libufdt/utils/src
+          cp -f tools/mkdtboimg.py kernel/scripts/ufdt/libufdt/utils/src/mkdtboimg.py
+          chmod +x kernel/scripts/ufdt/libufdt/utils/src/mkdtboimg.py
+          sed -i 's/python2 \$(MKDTBO)/python3 \$(MKDTBO)/g' kernel/scripts/Makefile.lib
+
       - name: Aplicar série EEVDF/CASS e remover WALT
         run: bash magictime/apply-scheduler-patches.sh kernel
 
