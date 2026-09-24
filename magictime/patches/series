@@ -26,5 +26,8 @@
 #   Supplies the cached-rbtree insertion helper and maps the newer waitqueue,
 #   kthread and cpuset-DL hooks to their AOSP16 equivalents.
 #
+# 0006-aosp16-rbtree-erase-bridge.patch
+#   Accounts for AOSP16's void rb_erase_cached() return convention.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.
