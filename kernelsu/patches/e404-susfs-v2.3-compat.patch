@@ -1,9 +1,12 @@
 --- a/fs/stat.c
 +++ b/fs/stat.c
-@@ -20,6 +20,10 @@
+@@ -20,6 +20,13 @@
  
  #include <linux/uaccess.h>
  #include <asm/unistd.h>
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs_def.h>
++#endif
 +#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
 +extern bool susfs_is_inode_sus_kstat(struct inode *inode, bool *out_is_fuse);
 +extern void susfs_sus_kstat_spoof_generic_fillattr(struct inode *inode, struct kstat *stat, u32 result_mask);
@@ -40,7 +43,15 @@
  {
 --- a/kernel/sys.c
 +++ b/kernel/sys.c
-@@ -1240,6 +1240,11 @@
+@@ -48,4 +48,7 @@
+ #include <linux/compat.h>
+ #include <linux/syscalls.h>
+ #include <linux/kprobes.h>
++#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
++#include <linux/jump_label.h>
++#endif
+ #include <linux/user_namespace.h>
+@@ -1240,6 +1243,11 @@
  	return ret;
  }
  
