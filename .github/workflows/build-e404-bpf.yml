@@ -26,7 +26,7 @@ on:
         type: boolean
         default: true
       droidspaces_profile:
-        description: 'Perfil DroidSpaces (minimal; memcg; full; full-pids; full-device; full-mq = POSIX_MQUEUE)'
+        description: 'Perfil DroidSpaces (minimal; memcg; full; full-pids; full-device; full-mq; full-binfmt)'
         required: true
         type: choice
         default: minimal
@@ -37,6 +37,7 @@ on:
           - memcg-full-pids
           - memcg-full-device
           - memcg-full-mq
+          - memcg-full-binfmt
       custom_boot_url:
         description: 'URL direta opcional de um boot.img base da sua ROM para injetar'
         required: false
@@ -212,6 +213,10 @@ jobs:
               DROIDSPACES_CONFIG='droidspaces/droidspaces-memcg-full-mq.config'
               PROFILE_LABEL='memcg-full-mq'
               ;;
+            memcg-full-binfmt)
+              DROIDSPACES_CONFIG='droidspaces/droidspaces-memcg-full-binfmt.config'
+              PROFILE_LABEL='memcg-full-binfmt'
+              ;;
             *)
               echo "FATAL: perfil Droidspaces desconhecido: $REQUESTED_PROFILE" >&2
               exit 1
@@ -257,7 +262,7 @@ jobs:
           grep -E '^(CONFIG_MEMCG|# CONFIG_MEMCG|# CONFIG_CGROUP_WRITEBACK|# CONFIG_SLUB_MEMCG)' "$F" || true
 
       - name: Aplicar correções do perfil MEMCG no E404
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false') && (steps.droidspaces_profile.outputs.label == 'memcg-safe' || steps.droidspaces_profile.outputs.label == 'memcg-full' || steps.droidspaces_profile.outputs.label == 'memcg-full-pids' || steps.droidspaces_profile.outputs.label == 'memcg-full-device' || steps.droidspaces_profile.outputs.label == 'memcg-full-mq')
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false') && (steps.droidspaces_profile.outputs.label == 'memcg-safe' || steps.droidspaces_profile.outputs.label == 'memcg-full' || steps.droidspaces_profile.outputs.label == 'memcg-full-pids' || steps.droidspaces_profile.outputs.label == 'memcg-full-device' || steps.droidspaces_profile.outputs.label == 'memcg-full-mq' || steps.droidspaces_profile.outputs.label == 'memcg-full-binfmt')
         env:
           PROFILE_LABEL: ${{ steps.droidspaces_profile.outputs.label }}
         run: |
@@ -328,6 +333,12 @@ jobs:
               grep -q '^CONFIG_MEMCG=y' "$F" || { echo 'FATAL: CONFIG_MEMCG=y ausente no perfil memcg-full-mq.'; exit 1; }
               for symbol in MEMCG_KMEM MEMCG_SWAP MEMCG_SWAP_ENABLED CGROUP_WRITEBACK SLUB_MEMCG_SYSFS_ON CGROUP_PIDS CGROUP_DEVICE POSIX_MQUEUE; do
                 grep -q "^CONFIG_${symbol}=y" "$F" || { echo "FATAL: CONFIG_${symbol}=y ausente no perfil memcg-full-mq."; exit 1; }
+              done
+              ;;
+            memcg-full-binfmt)
+              grep -q '^CONFIG_MEMCG=y' "$F" || { echo 'FATAL: CONFIG_MEMCG=y ausente no perfil memcg-full-binfmt.'; exit 1; }
+              for symbol in MEMCG_KMEM MEMCG_SWAP MEMCG_SWAP_ENABLED CGROUP_WRITEBACK SLUB_MEMCG_SYSFS_ON CGROUP_PIDS CGROUP_DEVICE POSIX_MQUEUE BINFMT_MISC; do
+                grep -q "^CONFIG_${symbol}=y" "$F" || { echo "FATAL: CONFIG_${symbol}=y ausente no perfil memcg-full-binfmt."; exit 1; }
               done
               ;;
             *)
@@ -421,6 +432,12 @@ jobs:
             memcg-full-mq)
               grep -q '^CONFIG_MEMCG=y' "$F" || { echo 'FATAL: Kconfig removeu CONFIG_MEMCG=y.'; exit 1; }
               for symbol in MEMCG_KMEM MEMCG_SWAP MEMCG_SWAP_ENABLED CGROUP_WRITEBACK SLUB_MEMCG_SYSFS_ON CGROUP_PIDS CGROUP_DEVICE POSIX_MQUEUE; do
+                grep -q "^CONFIG_${symbol}=y" "$F" || { echo "FATAL: Kconfig removeu CONFIG_${symbol}=y."; exit 1; }
+              done
+              ;;
+            memcg-full-binfmt)
+              grep -q '^CONFIG_MEMCG=y' "$F" || { echo 'FATAL: Kconfig removeu CONFIG_MEMCG=y.'; exit 1; }
+              for symbol in MEMCG_KMEM MEMCG_SWAP MEMCG_SWAP_ENABLED CGROUP_WRITEBACK SLUB_MEMCG_SYSFS_ON CGROUP_PIDS CGROUP_DEVICE POSIX_MQUEUE BINFMT_MISC; do
                 grep -q "^CONFIG_${symbol}=y" "$F" || { echo "FATAL: Kconfig removeu CONFIG_${symbol}=y."; exit 1; }
               done
               ;;
@@ -562,6 +579,8 @@ jobs:
             DROIDSPACES_STATUS="Bloco 2: MEMCG completo + CGROUP_PIDS + CGROUP_DEVICE; demais blocos ainda desativados"
           elif [ "$PROFILE_LABEL" = "memcg-full-mq" ]; then
             DROIDSPACES_STATUS="Bloco 3: MEMCG completo + CGROUP_PIDS + CGROUP_DEVICE + POSIX_MQUEUE"
+          elif [ "$PROFILE_LABEL" = "memcg-full-binfmt" ]; then
+            DROIDSPACES_STATUS="Bloco 4: MEMCG completo + CGROUP_PIDS + CGROUP_DEVICE + POSIX_MQUEUE + BINFMT_MISC"
           else
             DROIDSPACES_STATUS="Minimo (apenas USER_NS; baseline booteavel)"
           fi
