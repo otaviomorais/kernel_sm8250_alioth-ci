@@ -1,0 +1,29 @@
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 86e4a78c37dac467d07e91885ef7fd167005b978..ef7bcc54926856d242b390a0b47a299d7868bace 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -719,7 +719,7 @@ union rcu_special {
+ 	struct {
+ 		u8			blocked;
+ 		u8			need_qs;
+-		u8			exp_hint; /* Hint for performance. */
++		u8			exp_need_qs; /* Expedited quiescent state needed. */
+ 		u8			need_mb; /* Readers need smp_mb(). */
+ 	} b; /* Bits. */
+ 	u32 s; /* Set of bits. */
+diff --git a/mm/vmalloc.c b/mm/vmalloc.c
+index d33f2f68c80efdcb20899c6b43388de70b45339f..4e013133ea24a0804291abcda2e63a95d9892484 100644
+--- a/mm/vmalloc.c
++++ b/mm/vmalloc.c
+@@ -391,9 +391,9 @@ compute_subtree_max_size(struct vmap_area *va)
+ 		get_subtree_max_size(va->rb_node.rb_right));
+ }
+ 
+-RB_DECLARE_CALLBACKS(static, free_vmap_area_rb_augment_cb,
++RB_DECLARE_CALLBACKS_MAX(static, free_vmap_area_rb_augment_cb,
+ 	struct vmap_area, rb_node, unsigned long, subtree_max_size,
+-	compute_subtree_max_size)
++	va_size)
+ 
+ static void purge_vmap_area_lazy(void);
+ static BLOCKING_NOTIFIER_HEAD(vmap_notify_list);

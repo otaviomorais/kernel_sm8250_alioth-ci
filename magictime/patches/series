@@ -57,5 +57,9 @@
 #   Restores MAX_USER_RT_PRIO and uses the matching augmented-rbtree callback
 #   form in the AOSP16 VMA code.
 #
+# 0014-aosp16-rcu-vmalloc-bridge.patch
+#   Renames the RCU expedited-quiescent bit and uses the matching vmalloc
+#   augmented-rbtree callback form.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.
