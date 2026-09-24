@@ -97,5 +97,9 @@
 #   Adapts the Qualcomm cpufreq driver to AOSP16's em_register_perf_domain()
 #   interface.
 #
+# 0024-aosp16-cpuidle-accounting-bridge.patch
+#   Restores AOSP16's I/O-wait accessor and provides a no-op LPM bias hook when
+#   WALT busy hysteresis is absent.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.

@@ -1,0 +1,37 @@
+diff --git a/include/linux/sched/stat.h b/include/linux/sched/stat.h
+index 46a801b8118fa84c1661414aa5abf8ccd700e18a..eae3dc3e6752651810f1d552556bce6c04f6849c 100644
+--- a/include/linux/sched/stat.h
++++ b/include/linux/sched/stat.h
+@@ -21,6 +21,13 @@ extern unsigned int nr_running(void);
+ extern bool single_task_running(void);
+ extern unsigned int nr_iowait(void);
+ extern unsigned int nr_iowait_cpu(int cpu);
++extern void get_iowait_load(unsigned long *nr_waiters, unsigned long *load);
++
++/* WALT's busy-hysteresis bias is not present in the EEVDF/CASS port. */
++static inline u64 sched_lpm_disallowed_time(int cpu)
++{
++	return 0;
++}
+ 
+ static inline int sched_info_on(void)
+ {
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index caf159c8e40b01793dc5a4c34439c18e63b34d14..864eaea2a2e3344eefe48a102e860f354c5f967c 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -4841,6 +4841,14 @@ unsigned int nr_iowait(void)
+ 	return sum;
+ }
+ 
++void get_iowait_load(unsigned long *nr_waiters, unsigned long *load)
++{
++	struct rq *rq = this_rq();
++
++	*nr_waiters = atomic_read(&rq->nr_iowait);
++	*load = rq->load.weight;
++}
++
+ #ifdef CONFIG_SMP
+ 
+ /*
