@@ -82,6 +82,7 @@ while IFS= read -r line || [ -n "$line" ]; do
         "# CONFIG_"*" is not set") sym=$(echo "$line" | sed -n 's/^# CONFIG_\([A-Za-z0-9_]*\) is not set/\1/p') ;;
     esac
     if [ -n "$sym" ]; then
+        # Match the complete symbol name; CONFIG_NET must not remove CONFIG_NETDEVICES.
         sed -i \
             -e "/^CONFIG_${sym}=/d" \
             -e "/^# CONFIG_${sym} is not set$/d" \
