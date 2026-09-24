@@ -1,0 +1,105 @@
+diff --git a/include/linux/energy_model.h b/include/linux/energy_model.h
+index 4cf29b374c12aea9abc1eae27037d6776faf2f53..f30c15817cceeac28d0dbd4442ab8c5fa7bb8cf4 100644
+--- a/include/linux/energy_model.h
++++ b/include/linux/energy_model.h
+@@ -167,6 +167,14 @@ static inline unsigned long em_pd_energy(struct em_perf_domain *pd,
+ 	return cs->cost * sum_util / scale_cpu;
+ }
+ 
++static inline unsigned long em_cpu_energy(struct em_perf_domain *pd,
++						 unsigned long max_util,
++						 unsigned long sum_util,
++						 unsigned long capacity)
++{
++	return em_pd_energy(pd, max_util, sum_util);
++}
++
+ /**
+  * em_pd_nr_cap_states() - Get the number of capacity states of a perf. domain
+  * @pd		: performance domain for which this must be done
+@@ -197,6 +205,14 @@ static inline unsigned long em_pd_energy(struct em_perf_domain *pd,
+ {
+ 	return 0;
+ }
++
++static inline unsigned long em_cpu_energy(struct em_perf_domain *pd,
++						 unsigned long max_util,
++						 unsigned long sum_util,
++						 unsigned long capacity)
++{
++	return 0;
++}
+ static inline int em_pd_nr_cap_states(struct em_perf_domain *pd)
+ {
+ 	return 0;
+diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
+index 2bc0953345629f84705622bee0b5e51d01878ec0..9ad1a821464357ccbffdca9a3e599778d9887954 100644
+--- a/kernel/sched/deadline.c
++++ b/kernel/sched/deadline.c
+@@ -2050,7 +2050,7 @@ static int find_later_rq(struct task_struct *task)
+ 	if (this_cpu != -1)
+ 		return this_cpu;
+ 
+-	cpu = cpumask_any_distribute(later_mask);
++	cpu = sched_any_cpu_in_mask(later_mask, later_mask);
+ 	if (cpu < nr_cpu_ids)
+ 		return cpu;
+ 
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index be911f4e58c2e7aee83a029dfac7939cac14f2bd..9be48f033d0c2d6143991fd415f92804ce783185 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -9023,7 +9023,7 @@ int can_migrate_task(struct task_struct *p, struct lb_env *env)
+ 			return 0;
+ 
+ 		/* Prevent to re-select dst_cpu via env's CPUs: */
+-		cpu = cpumask_first_and_and(env->dst_grpmask, env->cpus, p->cpus_ptr);
++		cpu = sched_first_cpu_in_three_masks(env->dst_grpmask, env->cpus, p->cpus_ptr);
+ 
+ 		if (cpu < nr_cpu_ids) {
+ 			env->flags |= LBF_DST_PINNED;
+diff --git a/kernel/sched/rt.c b/kernel/sched/rt.c
+index 3da60962d8258fe02990044f24b5f10c540f2c0f..30bc3762376c53db6c0f6a2a381bbeab537ea7c9 100644
+--- a/kernel/sched/rt.c
++++ b/kernel/sched/rt.c
+@@ -1468,7 +1468,7 @@ static int find_lowest_rq(struct task_struct *task);
+ static bool cpu_busy_with_softirqs(int cpu)
+ {
+ 	u32 softirqs = per_cpu(active_softirqs, cpu) |
+-		       __cpu_softirq_pending(cpu);
++		       __IRQ_STAT(cpu, __softirq_pending);
+ 
+ 	return softirqs & LONG_SOFTIRQ_MASK;
+ }
+@@ -1848,7 +1848,7 @@ static int find_lowest_rq(struct task_struct *task)
+ 	if (this_cpu != -1)
+ 		return this_cpu;
+ 
+-	cpu = cpumask_any_distribute(lowest_mask);
++	cpu = sched_any_cpu_in_mask(lowest_mask, lowest_mask);
+ 	if (cpu < nr_cpu_ids)
+ 		return cpu;
+ 
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index 14b92869b05a20e1e5402f4f94c197816777dd31..93ef019f18be5a3ae5682c6aeabcd6fda05e0c87 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -90,6 +90,18 @@ static inline int sched_any_cpu_in_mask(const struct cpumask *src,
+ 	return nr_cpu_ids;
+ }
+ 
++static inline int sched_first_cpu_in_three_masks(const struct cpumask *a,
++						const struct cpumask *b,
++						const struct cpumask *c)
++{
++	int cpu;
++
++	for_each_cpu(cpu, a)
++		if (cpumask_test_cpu(cpu, b) && cpumask_test_cpu(cpu, c))
++			return cpu;
++	return nr_cpu_ids;
++}
++
+ struct rq;
+ struct cpuidle_state;
+ 

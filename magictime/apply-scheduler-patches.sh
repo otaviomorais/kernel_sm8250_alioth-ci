@@ -21,6 +21,7 @@ patches=(
     "$SCRIPT_DIR/patches/0001-walt-eevdf-cass-core.patch"
     "$SCRIPT_DIR/patches/0002-aosp-abi-thermal-platform.patch"
     "$SCRIPT_DIR/patches/0003-aosp16-core-api-bridge.patch"
+    "$SCRIPT_DIR/patches/0004-aosp16-aux-api-bridge.patch"
 )
 
 for patch in "${patches[@]}"; do

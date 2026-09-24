@@ -18,5 +18,9 @@
 #   Bridges scheduler-core calls to the older AOSP16 migration, cpuset,
 #   rcuwait, workqueue, cpuidle and smp-call APIs found by the first CI build.
 #
+# 0004-aosp16-aux-api-bridge.patch
+#   Bridges softirq accounting, cpumask iteration and the AOSP16 energy-model
+#   API reported by the next CI build.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.
