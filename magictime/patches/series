@@ -105,5 +105,9 @@
 #   Reads the EEVDF/CASS CFS load field expected by the restored cpuidle
 #   accessor.
 #
+# 0026-aosp16-rbtree-em-corectl-bridge.patch
+#   Aligns the AOSP16 rbtree and energy-model helper APIs, and removes the
+#   Qualcomm core-control notifier that depended on the deleted WALT object.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.

@@ -43,6 +43,7 @@ patches=(
     "$SCRIPT_DIR/patches/0023-aosp16-qcom-em-bridge.patch"
     "$SCRIPT_DIR/patches/0024-aosp16-cpuidle-accounting-bridge.patch"
     "$SCRIPT_DIR/patches/0025-aosp16-cpuidle-load-bridge.patch"
+    "$SCRIPT_DIR/patches/0026-aosp16-rbtree-em-corectl-bridge.patch"
 )
 
 for patch in "${patches[@]}"; do
