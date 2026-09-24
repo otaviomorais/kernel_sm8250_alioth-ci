@@ -1,48 +1,46 @@
-# Experimental: KernelSU-Next legacy + SUSFS v2.3
+# KernelSU-Next legacy + SUSFS v2.3 (UAPI 2)
 
-This path is isolated from the known-good `kernelsu/apply_e404.sh` integration.
-Do not use it for the recovery baseline until the image has booted and passed
-an ADB smoke test.
+This is the pinned non-GKI KernelSU-Next/SUSFS path used by the recovery
+baseline. It is intentionally separate from the older `kernelsu/apply_e404.sh`
+path. The UAPI 2 image has booted and passed the device smoke test; keep the
+known-good UAPI 2 release as the recovery baseline until a replacement has
+passed the same test.
 
 ## Pinned inputs
 
-- KernelSU-Next non-GKI legacy commit: `f6a1570cc7857141b8acef9b3073840f59539359`
-  (`legacy: non-GKI update — execveat (new bionic), hardening fixes, syscall table hooking scheme`).
-- SUSFS source: GitLab `simonpunk/susfs4ksu`, branch line `gki-android12-5.10`,
-  commit `b1de873fff29c3e1eebe643d6cab94af91f07217`, with
+- KernelSU-Next non-GKI legacy commit:
+  `f6a1570cc7857141b8acef9b3073840f59539359`.
+- SUSFS source: `simonpunk/susfs4ksu`, commit
+  `b1de873fff29c3e1eebe643d6cab94af91f07217`, with
   `SUSFS_VERSION "v2.3.0"`.
-- The KernelSU bridge patch is based on the public
-  `ksun-legacy-susfs-v2.3.0.patch` port and is adapted only for the f6a1570c
-  Kconfig layout.
-- `e404-ksu-legacy-manual-hooks.patch` supplies the small non-GKI syscall/manual
-  hook set required by the f6a legacy source. It is not the old Kowsu patch.
-- The integration copies the KSU sibling `uapi/` directory as well as
-  `kernel/`; f6a1570c uses a relative `kernel/include/uapi` link that would
-  otherwise break after relocation into `drivers/kernelsu`.
-- The CI sets `KSU_VERSION_OVERRIDE=33194`, the version calculated from the
-  pinned f6a1570c source. This is above the v3.4.0 manager's minimum UAPI
-  kernel version (`33188`) while keeping the source commit itself pinned.
+- The bridge copies the KSU sibling `uapi/` directory as well as `kernel/`;
+  the legacy source uses a relative `kernel/include/uapi` link.
+- The CI validates the actual UAPI header and uses `KSU_VERSION_OVERRIDE=33194`.
+  The matching manager line for this recovery stack is v3.3.0. Do not replace
+  it with the UAPI 4 manager experiment.
 
-## Intentional differences from the functional build
+## Intentional differences from the legacy-v1 baseline
 
 - `CONFIG_KSU_MANUAL_HOOK=y`.
 - `CONFIG_KSU_KPROBES_HOOK` and `CONFIG_KSU_SYSCALL_TABLE_HOOK` are disabled.
 - SUSFS v2.3 command bridge, zygote unmount integration, SUSFS initialization,
   and sdcard monitor are enabled.
-- The manager is expected to be the matching KernelSU-Next v3.4.0 manager. Do
-  not install that manager on the current functional v1.x kernel.
+- The source and manager line are pinned; do not accept a different checkout
+  silently.
 
-The original experimental workflow option is `legacy-susfs2-experimental`
-(KSU UAPI 2, the build already validated on the device). The updated option
-`legacy-susfs2-uapi4-experimental` uses KSU commit `65571d43`, which is the
-legacy non-GKI UAPI synchronization to version 4, while retaining the same
-manual-hook and SUSFS v2.3 bridge. It is the candidate to pair with manager
-v3.4.0 without the "kernel update required" UAPI warning.
+## DroidSpaces final build
 
-The UAPI 4 workflow sets `KSU_VERSION_OVERRIDE=33197`, the count-derived
-version for the pinned source, and validates the actual UAPI header before
-building. It is not a blind version-number override.
+Use the `full` DroidSpaces profile for the one-shot final integration. It
+contains the complete cumulative chain that was previously validated in
+separate builds:
 
-Both experimental options should first be dispatched with DroidSpaces disabled
-(or the `minimal` profile) so a failure is attributable to the root stack
-rather than MEMCG/NAT changes.
+`MEMCG -> CGROUP_PIDS -> CGROUP_DEVICE -> POSIX_MQUEUE -> BINFMT_MISC -> NAT`
+
+The profile also declares the E404 namespace and Netfilter prerequisites
+explicitly and intentionally excludes unvalidated extras such as NF_TABLES,
+MACVLAN/IPVLAN and CFS bandwidth scheduling. The historical `minimal`,
+`memcg-safe`, and incremental `memcg-full-*` profiles remain available for
+bisecting a regression.
+
+The failed UAPI 4 path and its source-compatibility patch are not part of this
+integration and must not be reintroduced into the workflow.

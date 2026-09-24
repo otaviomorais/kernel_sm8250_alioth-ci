@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Experimental only: KernelSU-Next legacy + SUSFS v2.3 bridge for E404 4.19.
+# KernelSU-Next legacy UAPI 2 + SUSFS v2.3 bridge for E404 4.19.
 # This path is intentionally separate from apply_e404.sh (the known-good v1.x path).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EXPECTED_KSU_COMMIT="${KSU_EXPECTED_COMMIT:-f6a1570cc7857141b8acef9b3073840f59539359}"
+EXPECTED_KSU_COMMIT="f6a1570cc7857141b8acef9b3073840f59539359"
 
 if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then
     echo "Uso: $0 <kernel> <defconfig> <ksu_repo> <susfs_repo> [enable_susfs:true|false]" >&2
@@ -98,16 +98,6 @@ grep -q 'ksu_handle_sys_reboot' "$KSU_REPO/kernel/supercall/supercall.c" || {
     echo "FATAL: bridge SUSFS não expõe ksu_handle_sys_reboot." >&2
     exit 1
 }
-
-# 65571d43 changes the UAPI profile field to curr_uid. Its intermediate
-# non-GKI port did not yet update every legacy policy reference, so apply the
-# small source-compatibility correction before copying the driver.
-if [ "${KSU_EXPECTED_UAPI_VERSION:-}" = "4" ]; then
-    KSU_UAPI4_PATCH="$SCRIPT_DIR/patches/ksu-uapi4-app-profile.patch"
-    git -C "$KSU_REPO" apply --check "$KSU_UAPI4_PATCH"
-    git -C "$KSU_REPO" apply "$KSU_UAPI4_PATCH"
-    echo "Correção de ABI KSU UAPI 4 (app_profile.curr_uid) aplicada."
-fi
 
 # Replace the upstream/Kowsu driver with the pinned KSU source.
 rm -rf "$KERNEL_DIR/KernelSU" "$KERNEL_DIR/drivers/kernelsu"
