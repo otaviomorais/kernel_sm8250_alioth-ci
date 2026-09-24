@@ -45,5 +45,9 @@
 #   Adds source-compatible task state/cpumask aliases and the AOSP16 fault
 #   signal helper while retaining the MagicTime scheduler field names.
 #
+# 0011-aosp16-scheduler-annotation-bridge.patch
+#   Restores the AOSP16 RCU-trace task bit and resched annotation hook used
+#   by the unchanged architecture and BPF code.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.

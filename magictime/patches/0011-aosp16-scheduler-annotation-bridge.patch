@@ -1,0 +1,23 @@
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 04fe9f7eb4c1bbbf5ccd6e1e5686b6a46b114271..86e4a78c37dac467d07e91885ef7fd167005b978 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -863,6 +863,7 @@ struct task_struct {
+ 	int				trc_ipi_to_cpu;
+ 	union rcu_special		trc_reader_special;
+ 	bool				trc_reader_checked;
++	bool				trc_reader_need_end;
+ 	struct list_head		trc_holdout_list;
+ #endif /* #ifdef CONFIG_TASKS_TRACE_RCU */
+ 
+@@ -1948,6 +1949,10 @@ static inline int test_tsk_need_resched(struct task_struct *tsk)
+  * value indicates whether a reschedule was done in fact.
+  * cond_resched_lock() will drop the spinlock before scheduling,
+  */
++#ifndef __might_resched
++#define __might_resched(file, line, offset) do { } while (0)
++#endif
++
+ #ifndef CONFIG_PREEMPT
+ extern int _cond_resched(void);
+ #else
