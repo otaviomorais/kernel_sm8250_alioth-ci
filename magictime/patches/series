@@ -14,5 +14,9 @@
 #   binder/proc/RMNET callers and the small ABI adaptations required to keep
 #   AOSP16 task_struct/cgroup and mm lifetime semantics.
 #
+# 0003-aosp16-core-api-bridge.patch
+#   Bridges scheduler-core calls to the older AOSP16 migration, cpuset,
+#   rcuwait, workqueue, cpuidle and smp-call APIs found by the first CI build.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.

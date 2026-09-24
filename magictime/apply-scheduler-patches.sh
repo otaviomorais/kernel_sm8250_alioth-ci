@@ -20,6 +20,7 @@ fi
 patches=(
     "$SCRIPT_DIR/patches/0001-walt-eevdf-cass-core.patch"
     "$SCRIPT_DIR/patches/0002-aosp-abi-thermal-platform.patch"
+    "$SCRIPT_DIR/patches/0003-aosp16-core-api-bridge.patch"
 )
 
 for patch in "${patches[@]}"; do
