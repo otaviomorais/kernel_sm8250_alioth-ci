@@ -30,6 +30,7 @@ patches=(
     "$SCRIPT_DIR/patches/0010-aosp16-task-abi-bridge.patch"
     "$SCRIPT_DIR/patches/0011-aosp16-scheduler-annotation-bridge.patch"
     "$SCRIPT_DIR/patches/0012-aosp16-cgroup-rbtree-proc-bridge.patch"
+    "$SCRIPT_DIR/patches/0013-aosp16-rtree-prio-bridge.patch"
 )
 
 for patch in "${patches[@]}"; do

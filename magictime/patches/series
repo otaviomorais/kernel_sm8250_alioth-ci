@@ -53,5 +53,9 @@
 #   Aligns cpuset attach, interval-tree callbacks and procfs with the AOSP16
 #   interfaces after removing the WALT/schedtune surface.
 #
+# 0013-aosp16-rtree-prio-bridge.patch
+#   Restores MAX_USER_RT_PRIO and uses the matching augmented-rbtree callback
+#   form in the AOSP16 VMA code.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.

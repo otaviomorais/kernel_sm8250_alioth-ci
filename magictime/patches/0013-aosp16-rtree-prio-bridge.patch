@@ -1,0 +1,41 @@
+diff --git a/include/linux/sched/prio.h b/include/linux/sched/prio.h
+index ab83d85e1183aa962e797e15e2d08fce6b976f84..7e991632bd3b3a7a732f3abc3d47b31a50f9b665 100644
+--- a/include/linux/sched/prio.h
++++ b/include/linux/sched/prio.h
+@@ -13,7 +13,8 @@
+  * values are inverted: lower p->prio value means higher priority.
+  */
+ 
+-#define MAX_RT_PRIO		100
++#define MAX_USER_RT_PRIO	100
++#define MAX_RT_PRIO		MAX_USER_RT_PRIO
+ 
+ #define MAX_PRIO		(MAX_RT_PRIO + NICE_WIDTH)
+ #define DEFAULT_PRIO		(MAX_RT_PRIO + NICE_WIDTH / 2)
+diff --git a/mm/mmap.c b/mm/mmap.c
+index c0f9e4a125aaefa90a849e430edf76a0379cb2f4..7659e3a15dd6a375971a73d788f60fbe0ac174b5 100644
+--- a/mm/mmap.c
++++ b/mm/mmap.c
+@@ -397,8 +397,9 @@ static void validate_mm(struct mm_struct *mm)
+ #define validate_mm(mm) do { } while (0)
+ #endif
+ 
+-RB_DECLARE_CALLBACKS(static, vma_gap_callbacks, struct vm_area_struct, vm_rb,
+-		     unsigned long, rb_subtree_gap, vma_compute_subtree_gap)
++RB_DECLARE_CALLBACKS_MAX(static, vma_gap_callbacks,
++			 struct vm_area_struct, vm_rb,
++			 unsigned long, rb_subtree_gap, vma_compute_subtree_gap)
+ 
+ /*
+  * Update augmented rbtree rb_subtree_gap values after vma->vm_start or
+@@ -408,8 +409,8 @@ RB_DECLARE_CALLBACKS(static, vma_gap_callbacks, struct vm_area_struct, vm_rb,
+ static void vma_gap_update(struct vm_area_struct *vma)
+ {
+ 	/*
+-	 * As it turns out, RB_DECLARE_CALLBACKS() already created a callback
+-	 * function that does exacltly what we want.
++	 * As it turns out, RB_DECLARE_CALLBACKS_MAX() already created a callback
++	 * function that does exactly what we want.
+ 	 */
+ 	vma_gap_callbacks_propagate(&vma->vm_rb, NULL);
+ }
