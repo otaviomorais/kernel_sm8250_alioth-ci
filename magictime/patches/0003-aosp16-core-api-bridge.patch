@@ -49,7 +49,7 @@ index f86c3b6e42d6324d82bb8005357f8ae658afea5c..17c95470571226cb5c23bebed5c0e604
  
  static struct workqueue_struct *cpuset_migrate_mm_wq;
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index f8e12ec01d8442248f6d96b4b50dc70ab70da3a1..89aa9a95d94fad4551c1e6ccf27786c9c049b288 100644
+index f8e12ec01d8442248f6d96b4b50dc70ab70da3a1..caf159c8e40b01793dc5a4c34439c18e63b34d14 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2260,53 +2260,6 @@ static void migrate_disable_switch(struct rq *rq, struct task_struct *p)
@@ -133,17 +133,18 @@ index f8e12ec01d8442248f6d96b4b50dc70ab70da3a1..89aa9a95d94fad4551c1e6ccf27786c9
  	if (dest_cpu >= nr_cpu_ids) {
  		ret = -EINVAL;
  		goto out;
-@@ -3530,7 +3483,8 @@ static void __ttwu_queue_wakelist(struct task_struct *p, int cpu, int wake_flags
+@@ -3530,7 +3483,9 @@ static void __ttwu_queue_wakelist(struct task_struct *p, int cpu, int wake_flags
  	p->sched_remote_wakeup = !!(wake_flags & WF_MIGRATED);
  
  	WRITE_ONCE(rq->ttwu_pending, 1);
 -	__smp_call_single_queue(cpu, &p->wake_entry.llist);
++	rq->ttwu_csd.func = sched_ttwu_pending;
 +	rq->ttwu_csd.info = &p->wake_entry.llist;
 +	smp_call_function_single_async(cpu, &rq->ttwu_csd);
  }
  
  void wake_up_if_idle(int cpu)
-@@ -6081,11 +6035,6 @@ static inline void sched_submit_work(struct task_struct *tsk)
+@@ -6081,11 +6036,6 @@ static inline void sched_submit_work(struct task_struct *tsk)
  		blk_schedule_flush_plug(tsk);
  }
  
@@ -155,7 +156,7 @@ index f8e12ec01d8442248f6d96b4b50dc70ab70da3a1..89aa9a95d94fad4551c1e6ccf27786c9
  
  asmlinkage __visible void __sched schedule(void)
  {
-@@ -6097,7 +6046,6 @@ asmlinkage __visible void __sched schedule(void)
+@@ -6097,7 +6047,6 @@ asmlinkage __visible void __sched schedule(void)
  		__schedule(SM_NONE);
  		sched_preempt_enable_no_resched();
  	} while (need_resched());
@@ -163,7 +164,7 @@ index f8e12ec01d8442248f6d96b4b50dc70ab70da3a1..89aa9a95d94fad4551c1e6ccf27786c9
  }
  EXPORT_SYMBOL(schedule);
  
-@@ -8217,7 +8165,6 @@ void __init init_idle(struct task_struct *idle, int cpu)
+@@ -8217,7 +8166,6 @@ void __init init_idle(struct task_struct *idle, int cpu)
  	 * if we want to avoid special-casing it in code that deals with per-CPU
  	 * kthreads.
  	 */
@@ -171,7 +172,7 @@ index f8e12ec01d8442248f6d96b4b50dc70ab70da3a1..89aa9a95d94fad4551c1e6ccf27786c9
  
  	raw_spin_lock_irqsave(&idle->pi_lock, flags);
  	raw_spin_rq_lock(rq);
-@@ -8433,7 +8380,7 @@ static void balance_push(struct rq *rq)
+@@ -8433,7 +8381,7 @@ static void balance_push(struct rq *rq)
  	 * Only active while going offline and when invoked on the outgoing
  	 * CPU.
  	 */
@@ -180,7 +181,7 @@ index f8e12ec01d8442248f6d96b4b50dc70ab70da3a1..89aa9a95d94fad4551c1e6ccf27786c9
  		return;
  
  	/*
-@@ -8507,8 +8454,7 @@ static void balance_hotplug_wait(void)
+@@ -8507,8 +8455,7 @@ static void balance_hotplug_wait(void)
  	struct rq *rq = this_rq();
  
  	rcuwait_wait_event(&rq->hotplug_wait,
