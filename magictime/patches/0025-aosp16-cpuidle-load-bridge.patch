@@ -1,0 +1,13 @@
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 864eaea2a2e3344eefe48a102e860f354c5f967c..3b679bbd28d4ec79cdd5a59cf4038e7ce6b419a4 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -4846,7 +4846,7 @@ void get_iowait_load(unsigned long *nr_waiters, unsigned long *load)
+ 	struct rq *rq = this_rq();
+ 
+ 	*nr_waiters = atomic_read(&rq->nr_iowait);
+-	*load = rq->load.weight;
++	*load = rq->cfs.load.weight;
+ }
+ 
+ #ifdef CONFIG_SMP

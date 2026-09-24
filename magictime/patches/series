@@ -101,5 +101,9 @@
 #   Restores AOSP16's I/O-wait accessor and provides a no-op LPM bias hook when
 #   WALT busy hysteresis is absent.
 #
+# 0025-aosp16-cpuidle-load-bridge.patch
+#   Reads the EEVDF/CASS CFS load field expected by the restored cpuidle
+#   accessor.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.
