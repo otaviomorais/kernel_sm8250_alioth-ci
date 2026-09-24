@@ -1,0 +1,2181 @@
+diff --git a/Documentation/scheduler/sched-tune.txt b/Documentation/scheduler/sched-tune.txt
+deleted file mode 100644
+index be728705fe25d6a683832a3acdd8ee22a5ed9c5b..0000000000000000000000000000000000000000
+--- a/Documentation/scheduler/sched-tune.txt
++++ /dev/null
+@@ -1,388 +0,0 @@
+-             Central, scheduler-driven, power-performance control
+-                               (EXPERIMENTAL)
+-
+-Abstract
+-========
+-
+-The topic of a single simple power-performance tunable, that is wholly
+-scheduler centric, and has well defined and predictable properties has come up
+-on several occasions in the past [1,2]. With techniques such as a scheduler
+-driven DVFS [3], we now have a good framework for implementing such a tunable.
+-This document describes the overall ideas behind its design and implementation.
+-
+-
+-Table of Contents
+-=================
+-
+-1. Motivation
+-2. Introduction
+-3. Signal Boosting Strategy
+-4. OPP selection using boosted CPU utilization
+-5. Per task group boosting
+-6. Per-task wakeup-placement-strategy Selection
+-7. Question and Answers
+-   - What about "auto" mode?
+-   - What about boosting on a congested system?
+-   - How CPUs are boosted when we have tasks with multiple boost values?
+-8. References
+-
+-
+-1. Motivation
+-=============
+-
+-Schedutil [3] is a utilization-driven cpufreq governor which allows the
+-scheduler to select the optimal DVFS operating point (OPP) for running a task
+-allocated to a CPU.
+-
+-However, sometimes it may be desired to intentionally boost the performance of
+-a workload even if that could imply a reasonable increase in energy
+-consumption. For example, in order to reduce the response time of a task, we
+-may want to run the task at a higher OPP than the one that is actually required
+-by it's CPU bandwidth demand.
+-
+-This last requirement is especially important if we consider that one of the
+-main goals of the utilization-driven governor component is to replace all
+-currently available CPUFreq policies. Since schedutil is event-based, as
+-opposed to the sampling driven governors we currently have, they are already
+-more responsive at selecting the optimal OPP to run tasks allocated to a CPU.
+-However, just tracking the actual task utilization may not be enough from a
+-performance standpoint.  For example, it is not possible to get behaviors
+-similar to those provided by the "performance" and "interactive" CPUFreq
+-governors.
+-
+-This document describes an implementation of a tunable, stacked on top of the
+-utilization-driven governor which extends its functionality to support task
+-performance boosting.
+-
+-By "performance boosting" we mean the reduction of the time required to
+-complete a task activation, i.e. the time elapsed from a task wakeup to its
+-next deactivation (e.g. because it goes back to sleep or it terminates).  For
+-example, if we consider a simple periodic task which executes the same workload
+-for 5[s] every 20[s] while running at a certain OPP, a boosted execution of
+-that task must complete each of its activations in less than 5[s].
+-
+-The rest of this document introduces in more details the proposed solution
+-which has been named SchedTune.
+-
+-
+-2. Introduction
+-===============
+-
+-SchedTune exposes a simple user-space interface provided through a new
+-CGroup controller 'stune' which provides two power-performance tunables
+-per group:
+-
+-  /<stune cgroup mount point>/schedtune.prefer_idle
+-  /<stune cgroup mount point>/schedtune.boost
+-
+-The CGroup implementation permits arbitrary user-space defined task
+-classification to tune the scheduler for different goals depending on the
+-specific nature of the task, e.g. background vs interactive vs low-priority.
+-
+-More details are given in section 5.
+-
+-2.1 Boosting
+-============
+-
+-The boost value is expressed as an integer in the range [0..100].
+-
+-A value of 0 (default) configures the CFS scheduler for maximum energy
+-efficiency. This means that schedutil runs the tasks at the minimum OPP
+-required to satisfy their workload demand.
+-
+-A value of 100 configures scheduler for maximum performance, which translates
+-to the selection of the maximum OPP on that CPU.
+-
+-The range between 0 and 100 can be set to satisfy other scenarios suitably. For
+-example to satisfy interactive response or depending on other system events
+-(battery level etc).
+-
+-The overall design of the SchedTune module is built on top of "Per-Entity Load
+-Tracking" (PELT) signals and schedutil by introducing a bias on the OPP
+-selection.
+-
+-Each time a task is allocated on a CPU, cpufreq is given the opportunity to tune
+-the operating frequency of that CPU to better match the workload demand. The
+-selection of the actual OPP being activated is influenced by the boost value
+-for the task CGroup.
+-
+-This simple biasing approach leverages existing frameworks, which means minimal
+-modifications to the scheduler, and yet it allows to achieve a range of
+-different behaviours all from a single simple tunable knob.
+-
+-In EAS schedulers, we use boosted task and CPU utilization for energy
+-calculation and energy-aware task placement.
+-
+-2.2 prefer_idle
+-===============
+-
+-This is a flag which indicates to the scheduler that userspace would like
+-the scheduler to focus on energy or to focus on performance.
+-
+-A value of 0 (default) signals to the CFS scheduler that tasks in this group
+-can be placed according to the energy-aware wakeup strategy.
+-
+-A value of 1 signals to the CFS scheduler that tasks in this group should be
+-placed to minimise wakeup latency.
+-
+-Android platforms typically use this flag for application tasks which the
+-user is currently interacting with.
+-
+-
+-3. Signal Boosting Strategy
+-===========================
+-
+-The whole PELT machinery works based on the value of a few load tracking signals
+-which basically track the CPU bandwidth requirements for tasks and the capacity
+-of CPUs. The basic idea behind the SchedTune knob is to artificially inflate
+-some of these load tracking signals to make a task or RQ appears more demanding
+-that it actually is.
+-
+-Which signals have to be inflated depends on the specific "consumer".  However,
+-independently from the specific (signal, consumer) pair, it is important to
+-define a simple and possibly consistent strategy for the concept of boosting a
+-signal.
+-
+-A boosting strategy defines how the "abstract" user-space defined
+-sched_cfs_boost value is translated into an internal "margin" value to be added
+-to a signal to get its inflated value:
+-
+-  margin         := boosting_strategy(sched_cfs_boost, signal)
+-  boosted_signal := signal + margin
+-
+-The boosting strategy currently implemented in SchedTune is called 'Signal
+-Proportional Compensation' (SPC). With SPC, the sched_cfs_boost value is used to
+-compute a margin which is proportional to the complement of the original signal.
+-When a signal has a maximum possible value, its complement is defined as
+-the delta from the actual value and its possible maximum.
+-
+-Since the tunable implementation uses signals which have SCHED_CAPACITY_SCALE as
+-the maximum possible value, the margin becomes:
+-
+-	margin := sched_cfs_boost * (SCHED_CAPACITY_SCALE - signal)
+-
+-Using this boosting strategy:
+-- a 100% sched_cfs_boost means that the signal is scaled to the maximum value
+-- each value in the range of sched_cfs_boost effectively inflates the signal in
+-  question by a quantity which is proportional to the maximum value.
+-
+-For example, by applying the SPC boosting strategy to the selection of the OPP
+-to run a task it is possible to achieve these behaviors:
+-
+--   0% boosting: run the task at the minimum OPP required by its workload
+-- 100% boosting: run the task at the maximum OPP available for the CPU
+--  50% boosting: run at the half-way OPP between minimum and maximum
+-
+-Which means that, at 50% boosting, a task will be scheduled to run at half of
+-the maximum theoretically achievable performance on the specific target
+-platform.
+-
+-A graphical representation of an SPC boosted signal is represented in the
+-following figure where:
+- a) "-" represents the original signal
+- b) "b" represents a  50% boosted signal
+- c) "p" represents a 100% boosted signal
+-
+-
+-   ^
+-   |  SCHED_CAPACITY_SCALE
+-   +-----------------------------------------------------------------+
+-   |pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp
+-   |
+-   |                                             boosted_signal
+-   |                                          bbbbbbbbbbbbbbbbbbbbbbbb
+-   |
+-   |                                            original signal
+-   |                  bbbbbbbbbbbbbbbbbbbbbbbb+----------------------+
+-   |                                          |
+-   |bbbbbbbbbbbbbbbbbb                        |
+-   |                                          |
+-   |                                          |
+-   |                                          |
+-   |                  +-----------------------+
+-   |                  |
+-   |                  |
+-   |                  |
+-   |------------------+
+-   |
+-   |
+-   +----------------------------------------------------------------------->
+-
+-The plot above shows a ramped load signal (titled 'original_signal') and it's
+-boosted equivalent. For each step of the original signal the boosted signal
+-corresponding to a 50% boost is midway from the original signal and the upper
+-bound. Boosting by 100% generates a boosted signal which is always saturated to
+-the upper bound.
+-
+-
+-4. OPP selection using boosted CPU utilization
+-==============================================
+-
+-It is worth calling out that the implementation does not introduce any new load
+-signals. Instead, it provides an API to tune existing signals. This tuning is
+-done on demand and only in scheduler code paths where it is sensible to do so.
+-The new API calls are defined to return either the default signal or a boosted
+-one, depending on the value of sched_cfs_boost. This is a clean an non invasive
+-modification of the existing existing code paths.
+-
+-The signal representing a CPU's utilization is boosted according to the
+-previously described SPC boosting strategy. To schedutil, this allows a CPU
+-(ie CFS run-queue) to appear more used then it actually is.
+-
+-Thus, with the sched_cfs_boost enabled we have the following main functions to
+-get the current utilization of a CPU:
+-
+-  cpu_util()
+-  stune_util()
+-
+-The new stune_util() is similar to the first but returns a boosted
+-utilization signal which is a function of the sched_cfs_boost value.
+-
+-This function is used in the CFS scheduler code paths where schedutil needs to
+-decide the OPP to run a CPU at. For example, this allows selecting the highest
+-OPP for a CPU which has the boost value set to 100%.
+-
+-
+-5. Per task group boosting
+-==========================
+-
+-On battery powered devices there usually are many background services which are
+-long running and need energy efficient scheduling. On the other hand, some
+-applications are more performance sensitive and require an interactive
+-response and/or maximum performance, regardless of the energy cost.
+-
+-To better service such scenarios, the SchedTune implementation has an extension
+-that provides a more fine grained boosting interface.
+-
+-A new CGroup controller, namely "schedtune", can be enabled which allows to
+-defined and configure task groups with different boosting values.
+-Tasks that require special performance can be put into separate CGroups.
+-The value of the boost associated with the tasks in this group can be specified
+-using a single knob exposed by the CGroup controller:
+-
+-   schedtune.boost
+-
+-This knob allows the definition of a boost value that is to be used for
+-SPC boosting of all tasks attached to this group.
+-
+-The current schedtune controller implementation is really simple and has these
+-main characteristics:
+-
+-  1) It is only possible to create 1 level depth hierarchies
+-
+-     The root control groups define the system-wide boost value to be applied
+-     by default to all tasks. Its direct subgroups are named "boost groups" and
+-     they define the boost value for specific set of tasks.
+-     Further nested subgroups are not allowed since they do not have a sensible
+-     meaning from a user-space standpoint.
+-
+-  2) It is possible to define only a limited number of "boost groups"
+-
+-     This number is defined at compile time and by default configured to 16.
+-     This is a design decision motivated by two main reasons:
+-     a) In a real system we do not expect utilization scenarios with more than
+-        a few boost groups. For example, a reasonable collection of groups could
+-        be just "background", "interactive" and "performance".
+-     b) It simplifies the implementation considerably, especially for the code
+-	which has to compute the per CPU boosting once there are multiple
+-        RUNNABLE tasks with different boost values.
+-
+-Such a simple design should allow servicing the main utilization scenarios
+-identified so far. It provides a simple interface which can be used to manage
+-the power-performance of all tasks or only selected tasks.
+-Moreover, this interface can be easily integrated by user-space run-times (e.g.
+-Android, ChromeOS) to implement a QoS solution for task boosting based on tasks
+-classification, which has been a long standing requirement.
+-
+-Setup and usage
+----------------
+-
+-0. Use a kernel with CONFIG_SCHED_TUNE support enabled
+-
+-1. Check that the "schedtune" CGroup controller is available:
+-
+-   root@linaro-nano:~# cat /proc/cgroups
+-   #subsys_name	hierarchy	num_cgroups	enabled
+-   cpuset  	0		1		1
+-   cpu     	0		1		1
+-   schedtune	0		1		1
+-
+-2. Mount a tmpfs to create the CGroups mount point (Optional)
+-
+-   root@linaro-nano:~# sudo mount -t tmpfs cgroups /sys/fs/cgroup
+-
+-3. Mount the "schedtune" controller
+-
+-   root@linaro-nano:~# mkdir /sys/fs/cgroup/stune
+-   root@linaro-nano:~# sudo mount -t cgroup -o schedtune stune /sys/fs/cgroup/stune
+-
+-4. Create task groups and configure their specific boost value (Optional)
+-
+-   For example here we create a "performance" boost group configure to boost
+-   all its tasks to 100%
+-
+-   root@linaro-nano:~# mkdir /sys/fs/cgroup/stune/performance
+-   root@linaro-nano:~# echo 100 > /sys/fs/cgroup/stune/performance/schedtune.boost
+-
+-5. Move tasks into the boost group
+-
+-   For example, the following moves the tasks with PID $TASKPID (and all its
+-   threads) into the "performance" boost group.
+-
+-   root@linaro-nano:~# echo "TASKPID > /sys/fs/cgroup/stune/performance/cgroup.procs
+-
+-This simple configuration allows only the threads of the $TASKPID task to run,
+-when needed, at the highest OPP in the most capable CPU of the system.
+-
+-
+-6. Per-task wakeup-placement-strategy Selection
+-===============================================
+-
+-Many devices have a number of CFS tasks in use which require an absolute
+-minimum wakeup latency, and many tasks for which wakeup latency is not
+-important.
+-
+-For touch-driven environments, removing additional wakeup latency can be
+-critical.
+-
+-When you use the Schedtume CGroup controller, you have access to a second
+-parameter which allows a group to be marked such that energy_aware task
+-placement is bypassed for tasks belonging to that group.
+-
+-prefer_idle=0 (default - use energy-aware task placement if available)
+-prefer_idle=1 (never use energy-aware task placement for these tasks)
+-
+-Since the regular wakeup task placement algorithm in CFS is biased for
+-performance, this has the effect of restoring minimum wakeup latency
+-for the desired tasks whilst still allowing energy-aware wakeup placement
+-to save energy for other tasks.
+-
+-
+-7. Question and Answers
+-=======================
+-
+-What about "auto" mode?
+------------------------
+-
+-The 'auto' mode as described in [5] can be implemented by interfacing SchedTune
+-with some suitable user-space element. This element could use the exposed
+-system-wide or cgroup based interface.
+-
+-How are multiple groups of tasks with different boost values managed?
+----------------------------------------------------------------------
+-
+-The current SchedTune implementation keeps track of the boosted RUNNABLE tasks
+-on a CPU. The CPU utilization seen by schedutil (and used to select an
+-appropriate OPP) is boosted with a value which is the maximum of the boost
+-values of the currently RUNNABLE tasks in its RQ.
+-
+-This allows cpufreq to boost a CPU only while there are boosted tasks ready
+-to run and switch back to the energy efficient mode as soon as the last boosted
+-task is dequeued.
+-
+-
+-8. References
+-=============
+-[1] http://lwn.net/Articles/552889
+-[2] http://lkml.org/lkml/2012/5/18/91
+-[3] https://lkml.org/lkml/2016/3/29/1041
+diff --git a/arch/arm/include/asm/topology.h b/arch/arm/include/asm/topology.h
+index 30420075a57608cd677845c6b69cf96559697438..65f72c21a9afb1cead2fb5cce167b5b468b6e90d 100644
+--- a/arch/arm/include/asm/topology.h
++++ b/arch/arm/include/asm/topology.h
+@@ -20,7 +20,6 @@ extern struct cputopo_arm cpu_topology[NR_CPUS];
+ #define topology_core_id(cpu)		(cpu_topology[cpu].core_id)
+ #define topology_core_cpumask(cpu)	(&cpu_topology[cpu].core_sibling)
+ #define topology_sibling_cpumask(cpu)	(&cpu_topology[cpu].thread_sibling)
+-#define topology_possible_sibling_cpumask topology_core_cpumask
+ 
+ void init_cpu_topology(void);
+ void store_cpu_topology(unsigned int cpuid);
+@@ -30,6 +29,7 @@ const struct cpumask *cpu_coregroup_mask(int cpu);
+ 
+ /* Replace task scheduler's default frequency-invariant accounting */
+ #define arch_scale_freq_capacity topology_get_freq_scale
++#define arch_scale_freq_invariant topology_scale_freq_invariant
+ 
+ /* Replace task scheduler's default max-frequency-invariant accounting */
+ #define arch_scale_max_freq_capacity topology_get_max_freq_scale
+@@ -40,6 +40,11 @@ const struct cpumask *cpu_coregroup_mask(int cpu);
+ /* Enable topology flag updates */
+ #define arch_update_cpu_topology topology_update_cpu_topology
+ 
++/* Replace task scheduler's default thermal pressure API */
++#define arch_scale_thermal_pressure topology_get_thermal_pressure
++#define arch_set_thermal_pressure   topology_set_thermal_pressure
++#define arch_update_thermal_pressure	topology_update_thermal_pressure
++
+ #else
+ 
+ static inline void init_cpu_topology(void) { }
+diff --git a/arch/arm64/include/asm/topology.h b/arch/arm64/include/asm/topology.h
+index 8ac48fc972fabf1d5b8665f5d2fee9110e63a37f..ced84bf7d92452f0292395b012f55741f76c9015 100644
+--- a/arch/arm64/include/asm/topology.h
++++ b/arch/arm64/include/asm/topology.h
+@@ -11,7 +11,6 @@ struct cpu_topology {
+ 	int llc_id;
+ 	cpumask_t thread_sibling;
+ 	cpumask_t core_sibling;
+-	cpumask_t core_possible_sibling;
+ 	cpumask_t llc_sibling;
+ };
+ 
+@@ -22,8 +21,6 @@ extern struct cpu_topology cpu_topology[NR_CPUS];
+ #define topology_core_cpumask(cpu)	(&cpu_topology[cpu].core_sibling)
+ #define topology_sibling_cpumask(cpu)	(&cpu_topology[cpu].thread_sibling)
+ #define topology_llc_cpumask(cpu)	(&cpu_topology[cpu].llc_sibling)
+-#define topology_possible_sibling_cpumask(cpu)		\
+-				(&cpu_topology[cpu].core_possible_sibling)
+ 
+ void init_cpu_topology(void);
+ void store_cpu_topology(unsigned int cpuid);
+@@ -44,16 +41,27 @@ int pcibus_to_node(struct pci_bus *bus);
+ 
+ /* Replace task scheduler's default frequency-invariant accounting */
+ #define arch_scale_freq_capacity topology_get_freq_scale
++#define arch_scale_freq_invariant topology_scale_freq_invariant
+ 
+ /* Replace task scheduler's default max-frequency-invariant accounting */
+ #define arch_scale_max_freq_capacity topology_get_max_freq_scale
++#define arch_set_min_freq_scale topology_set_min_freq_scale
++#define arch_scale_min_freq_capacity topology_get_min_freq_scale
+ 
+ /* Replace task scheduler's default cpu-invariant accounting */
+ #define arch_scale_cpu_capacity topology_get_cpu_scale
+ 
++/* Replace task scheduler's default thermal-pressure-invariant accounting */
++#define arch_scale_thermal_pressure topology_get_thermal_pressure
++
+ /* Enable topology flag updates */
+ #define arch_update_cpu_topology topology_update_cpu_topology
+ 
++/* Replace task scheduler's default thermal pressure API */
++#define arch_scale_thermal_pressure topology_get_thermal_pressure
++#define arch_set_thermal_pressure   topology_set_thermal_pressure
++#define arch_update_thermal_pressure	topology_update_thermal_pressure
++
+ #include <asm-generic/topology.h>
+ 
+ #endif /* _ASM_ARM_TOPOLOGY_H */
+diff --git a/arch/arm64/kernel/topology.c b/arch/arm64/kernel/topology.c
+index 7962a49d192bb658388789200bf3adf4f071fac7..33ce5dc7e33c3452e68c6bd4d3cd0100ce51ea7f 100644
+--- a/arch/arm64/kernel/topology.c
++++ b/arch/arm64/kernel/topology.c
+@@ -240,24 +240,6 @@ const struct cpumask *cpu_coregroup_mask(int cpu)
+ 	return core_mask;
+ }
+ 
+-static void update_possible_siblings_masks(unsigned int cpuid)
+-{
+-	struct cpu_topology *cpu_topo, *cpuid_topo = &cpu_topology[cpuid];
+-	int cpu;
+-
+-	if (cpuid_topo->package_id == -1)
+-		return;
+-
+-	for_each_possible_cpu(cpu) {
+-		cpu_topo = &cpu_topology[cpu];
+-
+-		if (cpuid_topo->package_id != cpu_topo->package_id)
+-			continue;
+-		cpumask_set_cpu(cpuid, &cpu_topo->core_possible_sibling);
+-		cpumask_set_cpu(cpu, &cpuid_topo->core_possible_sibling);
+-	}
+-}
+-
+ static void update_siblings_masks(unsigned int cpuid)
+ {
+ 	struct cpu_topology *cpu_topo, *cpuid_topo = &cpu_topology[cpuid];
+@@ -435,8 +417,6 @@ static inline int __init parse_acpi_topology(void)
+ 
+ void __init init_cpu_topology(void)
+ {
+-	int cpu;
+-
+ 	reset_cpu_topology();
+ 
+ 	/*
+@@ -447,8 +427,4 @@ void __init init_cpu_topology(void)
+ 		reset_cpu_topology();
+ 	else if (of_have_populated_dt() && parse_dt_topology())
+ 		reset_cpu_topology();
+-	else {
+-		for_each_possible_cpu(cpu)
+-			update_possible_siblings_masks(cpu);
+-	}
+ }
+diff --git a/drivers/android/binder.c b/drivers/android/binder.c
+index 448f4ba658a4416f697c29a500fabb7dedeacc06..d15846b533e1dcf0b434142c500cd22a6301f99b 100644
+--- a/drivers/android/binder.c
++++ b/drivers/android/binder.c
+@@ -1052,12 +1052,6 @@ static void binder_wakeup_poll_threads_ilocked(struct binder_proc *proc,
+ 		thread = rb_entry(n, struct binder_thread, rb_node);
+ 		if (thread->looper & BINDER_LOOPER_STATE_POLL &&
+ 		    binder_available_for_proc_work_ilocked(thread)) {
+-#ifdef CONFIG_SCHED_WALT
+-			if (thread->task && current->signal &&
+-				(current->signal->oom_score_adj == 0) &&
+-				(current->prio < DEFAULT_PRIO))
+-				thread->task->low_latency = true;
+-#endif
+ 			if (sync)
+ 				wake_up_interruptible_sync(&thread->wait);
+ 			else
+@@ -1117,12 +1111,6 @@ static void binder_wakeup_thread_ilocked(struct binder_proc *proc,
+ 	assert_spin_locked(&proc->inner_lock);
+ 
+ 	if (thread) {
+-#ifdef CONFIG_SCHED_WALT
+-		if (thread->task && current->signal &&
+-			(current->signal->oom_score_adj == 0) &&
+-			(current->prio < DEFAULT_PRIO))
+-			thread->task->low_latency = true;
+-#endif
+ 		if (sync)
+ 			wake_up_interruptible_sync(&thread->wait);
+ 		else
+@@ -4666,10 +4654,6 @@ static int binder_thread_read(struct binder_proc *proc,
+ 		ptr += trsize;
+ 
+ 		trace_binder_transaction_received(t);
+-#ifdef CONFIG_SCHED_WALT
+-		if (current->low_latency)
+-			current->low_latency = false;
+-#endif
+ 		binder_stat_br(proc, thread, cmd);
+ 		binder_debug(BINDER_DEBUG_TRANSACTION,
+ 			     "%d:%d %s %d %d:%d, cmd %d size %zd-%zd ptr %016llx-%016llx\n",
+diff --git a/drivers/base/arch_topology.c b/drivers/base/arch_topology.c
+index b5f61f2840d0136a55491e131cc15f74a3a1b71e..1195476de9f62e60652d8d41c6fbc3b1099a1018 100644
+--- a/drivers/base/arch_topology.c
++++ b/drivers/base/arch_topology.c
+@@ -7,7 +7,6 @@
+  */
+ 
+ #include <linux/acpi.h>
+-#include <linux/arch_topology.h>
+ #include <linux/cpu.h>
+ #include <linux/cpufreq.h>
+ #include <linux/device.h>
+@@ -17,16 +16,25 @@
+ #include <linux/sched/topology.h>
+ #include <linux/cpuset.h>
+ 
++bool topology_scale_freq_invariant(void)
++{
++	return cpufreq_supports_freq_invariance();
++}
++
+ DEFINE_PER_CPU(unsigned long, freq_scale) = SCHED_CAPACITY_SCALE;
+ DEFINE_PER_CPU(unsigned long, max_cpu_freq);
+ DEFINE_PER_CPU(unsigned long, max_freq_scale) = SCHED_CAPACITY_SCALE;
++static DEFINE_PER_CPU(u32, freq_factor) = 1;
+ 
+-void arch_set_freq_scale(struct cpumask *cpus, unsigned long cur_freq,
++void arch_set_freq_scale(const struct cpumask *cpus, unsigned long cur_freq,
+ 			 unsigned long max_freq)
+ {
+ 	unsigned long scale;
+ 	int i;
+ 
++	if (WARN_ON_ONCE(!cur_freq || !max_freq))
++		return;
++
+ 	scale = (cur_freq << SCHED_CAPACITY_SHIFT) / max_freq;
+ 
+ 	for_each_cpu(i, cpus) {
+@@ -35,7 +43,7 @@ void arch_set_freq_scale(struct cpumask *cpus, unsigned long cur_freq,
+ 	}
+ }
+ 
+-void arch_set_max_freq_scale(struct cpumask *cpus,
++void arch_set_max_freq_scale(const struct cpumask *cpus,
+ 			     unsigned long policy_max_freq)
+ {
+ 	unsigned long scale, max_freq;
+@@ -54,7 +62,24 @@ void arch_set_max_freq_scale(struct cpumask *cpus,
+ 		per_cpu(max_freq_scale, cpu) = scale;
+ }
+ 
+-static DEFINE_MUTEX(cpu_scale_mutex);
++DEFINE_PER_CPU(unsigned long, arch_min_freq_scale);
++EXPORT_PER_CPU_SYMBOL_GPL(arch_min_freq_scale);
++
++void topology_set_min_freq_scale(const struct cpumask *cpus,
++				 unsigned long min_freq, unsigned long max_freq)
++{
++	unsigned long scale;
++	int i;
++
++	if (WARN_ON_ONCE(!max_freq))
++		return;
++
++	scale = (min_freq * per_cpu(cpu_scale, cpumask_any(cpus))) / max_freq;
++
++	for_each_cpu(i, cpus)
++		per_cpu(arch_min_freq_scale, i) = scale;
++}
++
+ DEFINE_PER_CPU(unsigned long, cpu_scale) = SCHED_CAPACITY_SCALE;
+ 
+ void topology_set_cpu_scale(unsigned int cpu, unsigned long capacity)
+@@ -62,49 +87,71 @@ void topology_set_cpu_scale(unsigned int cpu, unsigned long capacity)
+ 	per_cpu(cpu_scale, cpu) = capacity;
+ }
+ 
+-static ssize_t cpu_capacity_show(struct device *dev,
+-				 struct device_attribute *attr,
+-				 char *buf)
++DEFINE_PER_CPU(unsigned long, thermal_pressure);
++
++void topology_set_thermal_pressure(const struct cpumask *cpus,
++			       unsigned long th_pressure)
+ {
+-	struct cpu *cpu = container_of(dev, struct cpu, dev);
++	int cpu;
+ 
+-	return sprintf(buf, "%lu\n", topology_get_cpu_scale(NULL, cpu->dev.id));
++	for_each_cpu(cpu, cpus)
++		WRITE_ONCE(per_cpu(thermal_pressure, cpu), th_pressure);
+ }
+ 
+-static void update_topology_flags_workfn(struct work_struct *work);
+-static DECLARE_WORK(update_topology_flags_work, update_topology_flags_workfn);
+-
+-static ssize_t cpu_capacity_store(struct device *dev,
+-				  struct device_attribute *attr,
+-				  const char *buf,
+-				  size_t count)
++/**
++ * topology_update_thermal_pressure() - Update thermal pressure for CPUs
++ * @cpus        : The related CPUs for which capacity has been reduced
++ * @capped_freq : The maximum allowed frequency that CPUs can run at
++ *
++ * Update the value of thermal pressure for all @cpus in the mask. The
++ * cpumask should include all (online+offline) affected CPUs, to avoid
++ * operating on stale data when hot-plug is used for some CPUs. The
++ * @capped_freq reflects the currently allowed max CPUs frequency due to
++ * thermal capping. It might be also a boost frequency value, which is bigger
++ * than the internal 'freq_factor' max frequency. In such case the pressure
++ * value should simply be removed, since this is an indication that there is
++ * no thermal throttling. The @capped_freq must be provided in kHz.
++ */
++void topology_update_thermal_pressure(const struct cpumask *cpus,
++				      unsigned long capped_freq)
+ {
+-	struct cpu *cpu = container_of(dev, struct cpu, dev);
+-	int this_cpu = cpu->dev.id;
+-	int i;
+-	unsigned long new_capacity;
+-	ssize_t ret;
++	unsigned long max_capacity, capacity;
++	u32 max_freq;
++	int cpu;
+ 
+-	if (!count)
+-		return 0;
++	cpu = cpumask_first(cpus);
++	max_capacity = arch_scale_cpu_capacity(NULL, cpu);
++	max_freq = per_cpu(freq_factor, cpu);
+ 
+-	ret = kstrtoul(buf, 0, &new_capacity);
+-	if (ret)
+-		return ret;
+-	if (new_capacity > SCHED_CAPACITY_SCALE)
+-		return -EINVAL;
++	/* Convert to MHz scale which is used in 'freq_factor' */
++	capped_freq /= 1000;
+ 
+-	mutex_lock(&cpu_scale_mutex);
+-	for_each_cpu(i, &cpu_topology[this_cpu].core_sibling)
+-		topology_set_cpu_scale(i, new_capacity);
+-	mutex_unlock(&cpu_scale_mutex);
++	/*
++	 * Handle properly the boost frequencies, which should simply clean
++	 * the thermal pressure value.
++	 */
++	if (max_freq <= capped_freq)
++		capacity = max_capacity;
++	else
++		capacity = mult_frac(max_capacity, capped_freq, max_freq);
+ 
+-	schedule_work(&update_topology_flags_work);
++	arch_set_thermal_pressure(cpus, max_capacity - capacity);
++}
++EXPORT_SYMBOL_GPL(topology_update_thermal_pressure);
+ 
+-	return count;
++static ssize_t cpu_capacity_show(struct device *dev,
++				 struct device_attribute *attr,
++				 char *buf)
++{
++	struct cpu *cpu = container_of(dev, struct cpu, dev);
++
++	return sprintf(buf, "%lu\n", topology_get_cpu_scale(cpu->dev.id));
+ }
+ 
+-static DEVICE_ATTR_RW(cpu_capacity);
++static void update_topology_flags_workfn(struct work_struct *work);
++static DECLARE_WORK(update_topology_flags_work, update_topology_flags_workfn);
++
++static DEVICE_ATTR_RO(cpu_capacity);
+ 
+ static int register_cpu_capacity_sysctl(void)
+ {
+@@ -144,7 +191,6 @@ static void update_topology_flags_workfn(struct work_struct *work)
+ 	update_topology = 0;
+ }
+ 
+-static u32 capacity_scale;
+ static u32 *raw_capacity;
+ 
+ static int free_raw_capacity(void)
+@@ -158,27 +204,32 @@ static int free_raw_capacity(void)
+ void topology_normalize_cpu_scale(void)
+ {
+ 	u64 capacity;
++	u64 capacity_scale;
+ 	int cpu;
+ 
+ 	if (!raw_capacity)
+ 		return;
+ 
+-	pr_debug("cpu_capacity: capacity_scale=%u\n", capacity_scale);
+-	mutex_lock(&cpu_scale_mutex);
++	capacity_scale = 1;
+ 	for_each_possible_cpu(cpu) {
+-		pr_debug("cpu_capacity: cpu=%d raw_capacity=%u\n",
+-			 cpu, raw_capacity[cpu]);
+-		capacity = (raw_capacity[cpu] << SCHED_CAPACITY_SHIFT)
+-			/ capacity_scale;
++		capacity = raw_capacity[cpu] * per_cpu(freq_factor, cpu);
++		capacity_scale = max(capacity, capacity_scale);
++	}
++
++	pr_debug("cpu_capacity: capacity_scale=%llu\n", capacity_scale);
++	for_each_possible_cpu(cpu) {
++		capacity = raw_capacity[cpu] * per_cpu(freq_factor, cpu);
++		capacity = div64_u64(capacity << SCHED_CAPACITY_SHIFT,
++			capacity_scale);
+ 		topology_set_cpu_scale(cpu, capacity);
+ 		pr_debug("cpu_capacity: CPU%d cpu_capacity=%lu\n",
+-			cpu, topology_get_cpu_scale(NULL, cpu));
++			cpu, topology_get_cpu_scale(cpu));
+ 	}
+-	mutex_unlock(&cpu_scale_mutex);
+ }
+ 
+ bool __init topology_parse_cpu_capacity(struct device_node *cpu_node, int cpu)
+ {
++	struct clk *cpu_clk;
+ 	static bool cap_parsing_failed;
+ 	int ret;
+ 	u32 cpu_capacity;
+@@ -199,10 +250,22 @@ bool __init topology_parse_cpu_capacity(struct device_node *cpu_node, int cpu)
+ 				return false;
+ 			}
+ 		}
+-		capacity_scale = max(cpu_capacity, capacity_scale);
+ 		raw_capacity[cpu] = cpu_capacity;
+ 		pr_debug("cpu_capacity: %pOF cpu_capacity=%u (raw)\n",
+ 			cpu_node, raw_capacity[cpu]);
++
++		/*
++		 * Update freq_factor for calculating early boot cpu capacities.
++		 * For non-clk CPU DVFS mechanism, there's no way to get the
++		 * frequency value now, assuming they are running at the same
++		 * frequency (by keeping the initial freq_factor value).
++		 */
++		cpu_clk = of_clk_get(cpu_node, 0);
++		if (!PTR_ERR_OR_ZERO(cpu_clk)) {
++			per_cpu(freq_factor, cpu) =
++				clk_get_rate(cpu_clk) / 1000;
++			clk_put(cpu_clk);
++		}
+ 	} else {
+ 		if (raw_capacity) {
+ 			pr_err("cpu_capacity: missing %pOF raw capacity\n",
+@@ -241,11 +304,8 @@ init_cpu_capacity_callback(struct notifier_block *nb,
+ 
+ 	cpumask_andnot(cpus_to_visit, cpus_to_visit, policy->related_cpus);
+ 
+-	for_each_cpu(cpu, policy->related_cpus) {
+-		raw_capacity[cpu] = topology_get_cpu_scale(NULL, cpu) *
+-				    policy->cpuinfo.max_freq / 1000UL;
+-		capacity_scale = max(raw_capacity[cpu], capacity_scale);
+-	}
++	for_each_cpu(cpu, policy->related_cpus)
++		per_cpu(freq_factor, cpu) = policy->cpuinfo.max_freq / 1000;
+ 
+ 	if (cpumask_empty(cpus_to_visit)) {
+ 		topology_normalize_cpu_scale();
+diff --git a/drivers/cpufreq/cpufreq.c b/drivers/cpufreq/cpufreq.c
+index 5068166bc0cace6d8a671d154dda3388f564d2ab..dc138fb30c5a6adfda75025a126a708291116836 100644
+--- a/drivers/cpufreq/cpufreq.c
++++ b/drivers/cpufreq/cpufreq.c
+@@ -31,7 +31,6 @@
+ #include <linux/syscore_ops.h>
+ #include <linux/tick.h>
+ #include <linux/sched/topology.h>
+-#include <linux/sched/sysctl.h>
+ 
+ #include <trace/events/power.h>
+ 
+@@ -52,9 +51,6 @@ static inline bool policy_is_inactive(struct cpufreq_policy *policy)
+ #define for_each_inactive_policy(__policy)		\
+ 	for_each_suitable_policy(__policy, false)
+ 
+-#define for_each_policy(__policy)			\
+-	list_for_each_entry(__policy, &cpufreq_policy_list, policy_list)
+-
+ /* Iterate over governors */
+ static LIST_HEAD(cpufreq_governor_list);
+ #define for_each_governor(__governor)				\
+@@ -69,6 +65,12 @@ static struct cpufreq_driver *cpufreq_driver;
+ static DEFINE_PER_CPU(struct cpufreq_policy *, cpufreq_cpu_data);
+ static DEFINE_RWLOCK(cpufreq_driver_lock);
+ 
++static DEFINE_STATIC_KEY_FALSE(cpufreq_freq_invariance);
++bool cpufreq_supports_freq_invariance(void)
++{
++	return static_branch_likely(&cpufreq_freq_invariance);
++}
++
+ /* Flag to suspend/resume CPUFreq governors */
+ static bool cpufreq_suspended;
+ 
+@@ -156,13 +158,14 @@ u64 get_cpu_idle_time(unsigned int cpu, u64 *wall, int io_busy)
+ }
+ EXPORT_SYMBOL_GPL(get_cpu_idle_time);
+ 
+-__weak void arch_set_freq_scale(struct cpumask *cpus, unsigned long cur_freq,
+-		unsigned long max_freq)
++__weak void arch_set_freq_scale(const struct cpumask *cpus,
++				unsigned long cur_freq,
++				unsigned long max_freq)
+ {
+ }
+ EXPORT_SYMBOL_GPL(arch_set_freq_scale);
+ 
+-__weak void arch_set_max_freq_scale(struct cpumask *cpus,
++__weak void arch_set_max_freq_scale(const struct cpumask *cpus,
+ 				    unsigned long policy_max_freq)
+ {
+ }
+@@ -419,8 +422,14 @@ void cpufreq_freq_transition_end(struct cpufreq_policy *policy,
+ 
+ 	cpufreq_notify_post_transition(policy, freqs, transition_failed);
+ 
++	arch_set_freq_scale(policy->related_cpus,
++			    policy->cur,
++			    policy->cpuinfo.max_freq);
++
++	spin_lock(&policy->transition_lock);
+ 	policy->transition_ongoing = false;
+ 	policy->transition_task = NULL;
++	spin_unlock(&policy->transition_lock);
+ 
+ 	wake_up(&policy->transition_wait);
+ }
+@@ -494,6 +503,22 @@ void cpufreq_disable_fast_switch(struct cpufreq_policy *policy)
+ }
+ EXPORT_SYMBOL_GPL(cpufreq_disable_fast_switch);
+ 
++unsigned int __resolve_freq(struct cpufreq_policy *policy,
++			    unsigned int target_freq, unsigned int relation)
++{
++	unsigned int idx;
++
++	target_freq = clamp_val(target_freq, policy->min, policy->max);
++
++	if (!cpufreq_driver->target_index)
++		return target_freq;
++
++	idx = cpufreq_frequency_table_target(policy, target_freq, relation);
++	policy->cached_resolved_idx = idx;
++	policy->cached_target_freq = target_freq;
++	return policy->freq_table[idx].frequency;
++}
++
+ /**
+  * cpufreq_driver_resolve_freq - Map a target frequency to a driver-supported
+  * one.
+@@ -507,22 +532,7 @@ EXPORT_SYMBOL_GPL(cpufreq_disable_fast_switch);
+ unsigned int cpufreq_driver_resolve_freq(struct cpufreq_policy *policy,
+ 					 unsigned int target_freq)
+ {
+-	target_freq = clamp_val(target_freq, policy->min, policy->max);
+-	policy->cached_target_freq = target_freq;
+-
+-	if (cpufreq_driver->target_index) {
+-		int idx;
+-
+-		idx = cpufreq_frequency_table_target(policy, target_freq,
+-						     CPUFREQ_RELATION_L);
+-		policy->cached_resolved_idx = idx;
+-		return policy->freq_table[idx].frequency;
+-	}
+-
+-	if (cpufreq_driver->resolve_freq)
+-		return cpufreq_driver->resolve_freq(policy, target_freq);
+-
+-	return target_freq;
++	return __resolve_freq(policy, target_freq, CPUFREQ_RELATION_L);
+ }
+ EXPORT_SYMBOL_GPL(cpufreq_driver_resolve_freq);
+ 
+@@ -658,36 +668,18 @@ static ssize_t show_##file_name				\
+ 	return sprintf(buf, "%u\n", policy->object);	\
+ }
+ 
+-show_one(cpuinfo_min_freq, cpuinfo.min_freq);
+-show_one(cpuinfo_transition_latency, cpuinfo.transition_latency);
+-show_one(scaling_min_freq, min);
+-show_one(scaling_max_freq, max);
+-
+-unsigned int cpuinfo_max_freq_cached;
+-
+-static bool should_use_cached_freq(int cpu)
+-{
+-	if (!cpuinfo_max_freq_cached)
+-		return false;
+-
+-	if (!(BIT(cpu) & sched_lib_mask_force))
+-		return false;
+-
+-	return is_sched_lib_based_app(current->pid);
+-}
+-
+ static ssize_t show_cpuinfo_max_freq(struct cpufreq_policy *policy, char *buf)
+ {
+-	unsigned int freq = policy->cpuinfo.max_freq;
++	unsigned int max_freq = policy->cpuinfo.max_freq;
+ 
+-	if (should_use_cached_freq(policy->cpu))
+-		freq = cpuinfo_max_freq_cached << 1;
+-	else
+-		freq = policy->cpuinfo.max_freq;
+-
+-	return scnprintf(buf, PAGE_SIZE, "%u\n", freq);
++	return sprintf(buf, "%u\n", max_freq);
+ }
+ 
++show_one(cpuinfo_min_freq, cpuinfo.min_freq);
++show_one(cpuinfo_transition_latency, cpuinfo.transition_latency);
++show_one(scaling_min_freq, min);
++show_one(scaling_max_freq, max);
++
+ __weak unsigned int arch_freq_get_on_cpu(int cpu)
+ {
+ 	return 0;
+@@ -701,8 +693,7 @@ static ssize_t show_scaling_cur_freq(struct cpufreq_policy *policy, char *buf)
+ 	freq = arch_freq_get_on_cpu(policy->cpu);
+ 	if (freq)
+ 		ret = sprintf(buf, "%u\n", freq);
+-	else if (cpufreq_driver && cpufreq_driver->setpolicy &&
+-			cpufreq_driver->get)
++	else if (cpufreq_driver->setpolicy && cpufreq_driver->get)
+ 		ret = sprintf(buf, "%u\n", cpufreq_driver->get(policy->cpu));
+ 	else
+ 		ret = sprintf(buf, "%u\n", policy->cur);
+@@ -1312,14 +1303,13 @@ static int cpufreq_online(unsigned int cpu)
+ 	 */
+ 	if ((cpufreq_driver->flags & CPUFREQ_NEED_INITIAL_FREQ_CHECK)
+ 	    && has_target()) {
++		unsigned int old_freq = policy->cur;
++
+ 		/* Are we running at unknown frequency ? */
+-		ret = cpufreq_frequency_table_get_index(policy, policy->cur);
++		ret = cpufreq_frequency_table_get_index(policy, old_freq);
+ 		if (ret == -EINVAL) {
+-			/* Warn user and fix it */
+-			pr_warn("%s: CPU%d: Running at unlisted freq: %u KHz\n",
+-				__func__, policy->cpu, policy->cur);
+-			ret = __cpufreq_driver_target(policy, policy->cur - 1,
+-				CPUFREQ_RELATION_L);
++			ret = __cpufreq_driver_target(policy, old_freq - 1,
++						      CPUFREQ_RELATION_L);
+ 
+ 			/*
+ 			 * Reaching here after boot in a few seconds may not
+@@ -1327,8 +1317,8 @@ static int cpufreq_online(unsigned int cpu)
+ 			 * frequency for longer duration. Hence, a BUG_ON().
+ 			 */
+ 			BUG_ON(ret);
+-			pr_warn("%s: CPU%d: Unlisted initial frequency changed to: %u KHz\n",
+-				__func__, policy->cpu, policy->cur);
++			pr_info("%s: CPU%d: Running at unlisted initial frequency: %u KHz, changing to: %u KHz\n",
++				__func__, policy->cpu, old_freq, policy->cur);
+ 		}
+ 	}
+ 
+@@ -1751,6 +1741,18 @@ void cpufreq_resume(void)
+ 	}
+ }
+ 
++/**
++ * cpufreq_driver_test_flags - Test cpufreq driver's flags against given ones.
++ * @flags: Flags to test against the current cpufreq driver's flags.
++ *
++ * Assumes that the driver is there, so callers must ensure that this is the
++ * case.
++ */
++bool cpufreq_driver_test_flags(u16 flags)
++{
++	return !!(cpufreq_driver->flags & flags);
++}
++
+ /**
+  *	cpufreq_get_current_driver - return current driver's name
+  *
+@@ -1903,20 +1905,75 @@ EXPORT_SYMBOL(cpufreq_unregister_notifier);
+ unsigned int cpufreq_driver_fast_switch(struct cpufreq_policy *policy,
+ 					unsigned int target_freq)
+ {
+-	int ret;
++	unsigned int freq;
++	int cpu;
+ 
+ 	target_freq = clamp_val(target_freq, policy->min, policy->max);
++	freq = cpufreq_driver->fast_switch(policy, target_freq);
+ 
+-	ret = cpufreq_driver->fast_switch(policy, target_freq);
+-	if (ret) {
+-		cpufreq_times_record_transition(policy, ret);
+-		cpufreq_stats_record_transition(policy, ret);
++	if (!freq)
++		return 0;
++
++	policy->cur = freq;
++
++	cpufreq_times_record_transition(policy, freq);
++	cpufreq_stats_record_transition(policy, freq);
++	
++	arch_set_freq_scale(policy->related_cpus, freq,
++			    policy->cpuinfo.max_freq);
++
++	arch_set_freq_scale(policy->related_cpus, freq,
++			    policy->cpuinfo.max_freq);
++
++	if (trace_cpu_frequency_enabled()) {
++		for_each_cpu(cpu, policy->cpus)
++			trace_cpu_frequency(freq, cpu);
+ 	}
+ 
+-	return ret;
++	return freq;
+ }
+ EXPORT_SYMBOL_GPL(cpufreq_driver_fast_switch);
+ 
++/**
++ * cpufreq_driver_adjust_perf - Adjust CPU performance level in one go.
++ * @cpu: Target CPU.
++ * @min_perf: Minimum (required) performance level (units of @capacity).
++ * @target_perf: Terget (desired) performance level (units of @capacity).
++ * @capacity: Capacity of the target CPU.
++ *
++ * Carry out a fast performance level switch of @cpu without sleeping.
++ *
++ * The driver's ->adjust_perf() callback invoked by this function must be
++ * suitable for being called from within RCU-sched read-side critical sections
++ * and it is expected to select a suitable performance level equal to or above
++ * @min_perf and preferably equal to or below @target_perf.
++ *
++ * This function must not be called if policy->fast_switch_enabled is unset.
++ *
++ * Governors calling this function must guarantee that it will never be invoked
++ * twice in parallel for the same CPU and that it will never be called in
++ * parallel with either ->target() or ->target_index() or ->fast_switch() for
++ * the same CPU.
++ */
++void cpufreq_driver_adjust_perf(unsigned int cpu,
++	unsigned long min_perf,
++	unsigned long target_perf,
++	unsigned long capacity)
++{
++	cpufreq_driver->adjust_perf(cpu, min_perf, target_perf, capacity);
++}
++
++/**
++* cpufreq_driver_has_adjust_perf - Check "direct fast switch" callback.
++*
++* Return 'true' if the ->adjust_perf callback is present for the
++* current driver or 'false' otherwise.
++*/
++bool cpufreq_driver_has_adjust_perf(void)
++{
++	return !!cpufreq_driver->adjust_perf;
++}
++
+ /* Must set freqs->new to intermediate frequency */
+ static int __target_intermediate(struct cpufreq_policy *policy,
+ 				 struct cpufreq_freqs *freqs, int index)
+@@ -2005,17 +2062,19 @@ int __cpufreq_driver_target(struct cpufreq_policy *policy,
+ 			    unsigned int relation)
+ {
+ 	unsigned int old_target_freq = target_freq;
+-	int index;
+ 
+ 	if (cpufreq_disabled())
+ 		return -ENODEV;
+ 
+-	/* Make sure that target_freq is within supported range */
+-	target_freq = clamp_val(target_freq, policy->min, policy->max);
++	target_freq = __resolve_freq(policy, target_freq, relation);
+ 
+ 	pr_debug("target for CPU %u: %u kHz, relation %u, requested %u kHz\n",
+ 		 policy->cpu, target_freq, relation, old_target_freq);
+ 
++	if (target_freq == policy->cur &&
++	    !(cpufreq_driver->flags & CPUFREQ_NEED_UPDATE_LIMITS))
++		return 0;
++
+ 	/* Save last value to restore later on errors */
+ 	policy->restore_freq = policy->cur;
+ 
+@@ -2025,9 +2084,7 @@ int __cpufreq_driver_target(struct cpufreq_policy *policy,
+ 	if (!cpufreq_driver->target_index)
+ 		return -EINVAL;
+ 
+-	index = cpufreq_frequency_table_target(policy, target_freq, relation);
+-
+-	return __target_index(policy, index);
++	return __target_index(policy, policy->cached_resolved_idx);
+ }
+ EXPORT_SYMBOL_GPL(__cpufreq_driver_target);
+ 
+@@ -2067,7 +2124,7 @@ static int cpufreq_init_governor(struct cpufreq_policy *policy)
+ 		return -EINVAL;
+ 
+ 	/* Platform doesn't want dynamic frequency switching ? */
+-	if (policy->governor->dynamic_switching &&
++	if (policy->governor->flags & CPUFREQ_GOV_DYNAMIC_SWITCHING &&
+ 	    cpufreq_driver->flags & CPUFREQ_NO_AUTO_DYNAMIC_SWITCHING) {
+ 		struct cpufreq_governor *gov = cpufreq_fallback_governor();
+ 
+@@ -2093,6 +2150,8 @@ static int cpufreq_init_governor(struct cpufreq_policy *policy)
+ 		}
+ 	}
+ 
++	policy->strict_target = !!(policy->governor->flags & CPUFREQ_GOV_STRICT_TARGET);
++
+ 	return 0;
+ }
+ 
+@@ -2288,7 +2347,8 @@ static int cpufreq_set_policy(struct cpufreq_policy *policy,
+ 	policy->max = new_policy->max;
+ 	trace_cpu_frequency_limits(policy);
+ 
+-	arch_set_max_freq_scale(policy->cpus, policy->max);
++	arch_set_min_freq_scale(policy->related_cpus, policy->min,
++				policy->cpuinfo.max_freq);
+ 
+ 	policy->cached_target_freq = UINT_MAX;
+ 
+@@ -2557,6 +2617,15 @@ int cpufreq_register_driver(struct cpufreq_driver *driver_data)
+ 	cpufreq_driver = driver_data;
+ 	write_unlock_irqrestore(&cpufreq_driver_lock, flags);
+ 
++	/*
++	 * Mark support for the scheduler's frequency invariance engine for
++	 * drivers that implement target(), target_index() or fast_switch().
++	 */
++	if (!cpufreq_driver->setpolicy) {
++		static_branch_enable_cpuslocked(&cpufreq_freq_invariance);
++		pr_debug("supports frequency invariance");
++	}
++
+ 	if (driver_data->setpolicy)
+ 		driver_data->flags |= CPUFREQ_CONST_LOOPS;
+ 
+@@ -2570,8 +2639,7 @@ int cpufreq_register_driver(struct cpufreq_driver *driver_data)
+ 	if (ret)
+ 		goto err_boost_unreg;
+ 
+-	if (!(cpufreq_driver->flags & CPUFREQ_STICKY) &&
+-	    list_empty(&cpufreq_policy_list)) {
++	if (unlikely(list_empty(&cpufreq_policy_list))) {
+ 		/* if all ->init() calls failed, unregister */
+ 		ret = -ENODEV;
+ 		pr_debug("%s: No CPU initialized for driver %s\n", __func__,
+@@ -2626,6 +2694,7 @@ int cpufreq_unregister_driver(struct cpufreq_driver *driver)
+ 	cpus_read_lock();
+ 	subsys_interface_unregister(&cpufreq_interface);
+ 	remove_boost_sysfs_file();
++	static_branch_disable_cpuslocked(&cpufreq_freq_invariance);
+ 	cpuhp_remove_state_nocalls_cpuslocked(hp_online);
+ 
+ 	write_lock_irqsave(&cpufreq_driver_lock, flags);
+diff --git a/drivers/cpufreq/qcom-cpufreq-hw.c b/drivers/cpufreq/qcom-cpufreq-hw.c
+index e1f1331fb7634487c9a13c86b1cd0546a520bf07..9526291413083a35a67d94e43617ed13cc71deaa 100644
+--- a/drivers/cpufreq/qcom-cpufreq-hw.c
++++ b/drivers/cpufreq/qcom-cpufreq-hw.c
+@@ -25,7 +25,7 @@
+ #define CLK_HW_DIV			2
+ #define GT_IRQ_STATUS			BIT(2)
+ #define MAX_FN_SIZE			20
+-#define LIMITS_POLLING_DELAY_MS		10
++#define LIMITS_POLLING_DELAY_MS		4
+ 
+ #define CYCLE_CNTR_OFFSET(c, m, acc_count)				\
+ 			(acc_count ? ((c - cpumask_first(m) + 1) * 4) : 0)
+@@ -83,6 +83,7 @@ struct cpufreq_qcom {
+ 	char dcvsh_irq_name[MAX_FN_SIZE];
+ 	bool is_irq_enabled;
+ 	bool is_irq_requested;
++	bool exited;
+ };
+ 
+ struct cpufreq_counter {
+@@ -135,23 +136,34 @@ static unsigned long limits_mitigation_notify(struct cpufreq_qcom *c,
+ 					bool limit)
+ {
+ 	struct cpufreq_policy *policy;
+-	u32 cpu;
+-	unsigned long freq;
++	u32 cpu = cpumask_first(&c->related_cpus);
++	unsigned long freq, max_capacity, capacity;
++
++	max_capacity = arch_scale_cpu_capacity(NULL, cpu);
++	policy = cpufreq_cpu_get_raw(cpu);
++	capacity = max_capacity;
+ 
+ 	if (limit) {
+ 		freq = readl_relaxed(c->reg_bases[REG_DOMAIN_STATE]) &
+ 				GENMASK(7, 0);
+ 		freq = DIV_ROUND_CLOSEST_ULL(freq * c->xo_rate, 1000);
++
++		if (policy) {
++			/* Convert limited freq to reduced capacity */
++			capacity = mult_frac(max_capacity, freq, policy->cpuinfo.max_freq);
++
++			/* Don't pass boost capacity to scheduler */
++			if (capacity > max_capacity)
++				capacity = max_capacity;
++		}
+ 	} else {
+-		cpu = cpumask_first(&c->related_cpus);
+-		policy = cpufreq_cpu_get_raw(cpu);
+ 		if (!policy)
+ 			freq = U32_MAX;
+ 		else
+-			freq = policy->cpuinfo.max_freq;
++			freq = policy->max;
+ 	}
+ 
+-	sched_update_cpu_freq_min_max(&c->related_cpus, 0, freq);
++	arch_set_thermal_pressure(&c->related_cpus, max_capacity - capacity);
+ 	trace_dcvsh_freq(cpumask_first(&c->related_cpus), freq);
+ 	c->dcvsh_freq_limit = freq;
+ 
+@@ -167,13 +179,16 @@ static void limits_dcvsh_poll(struct work_struct *work)
+ 
+ 	mutex_lock(&c->dcvsh_lock);
+ 
++	if (c->exited)
++		goto out;
++
+ 	cpu = cpumask_first(&c->related_cpus);
+ 
+ 	freq_limit = limits_mitigation_notify(c, true);
+ 
+ 	dcvsh_freq = qcom_cpufreq_hw_get(cpu);
+ 
+-	if (freq_limit != dcvsh_freq) {
++	if (freq_limit < dcvsh_freq) {
+ 		mod_delayed_work(system_highpri_wq, &c->freq_poll_work,
+ 				msecs_to_jiffies(LIMITS_POLLING_DELAY_MS));
+ 	} else {
+@@ -188,6 +203,7 @@ static void limits_dcvsh_poll(struct work_struct *work)
+ 		enable_irq(c->dcvsh_irq);
+ 	}
+ 
++out:
+ 	mutex_unlock(&c->dcvsh_lock);
+ }
+ 
+@@ -245,40 +261,6 @@ static irqreturn_t dcvsh_handle_isr(int irq, void *data)
+ 	return IRQ_HANDLED;
+ }
+ 
+-static u64 qcom_cpufreq_get_cpu_cycle_counter(int cpu)
+-{
+-	struct cpufreq_counter *cpu_counter;
+-	struct cpufreq_qcom *cpu_domain;
+-	u64 cycle_counter_ret;
+-	unsigned long flags;
+-	u16 offset;
+-	u32 val;
+-
+-	cpu_domain = qcom_freq_domain_map[cpu];
+-	cpu_counter = &qcom_cpufreq_counter[cpu];
+-	spin_lock_irqsave(&cpu_counter->lock, flags);
+-
+-	offset = CYCLE_CNTR_OFFSET(cpu, &cpu_domain->related_cpus,
+-					accumulative_counter);
+-	val = readl_relaxed_no_log(cpu_domain->reg_bases[REG_CYCLE_CNTR] +
+-				   offset);
+-
+-	if (val < cpu_counter->prev_cycle_counter) {
+-		/* Handle counter overflow */
+-		cpu_counter->total_cycle_counter += UINT_MAX -
+-			cpu_counter->prev_cycle_counter + val;
+-		cpu_counter->prev_cycle_counter = val;
+-	} else {
+-		cpu_counter->total_cycle_counter += val -
+-			cpu_counter->prev_cycle_counter;
+-		cpu_counter->prev_cycle_counter = val;
+-	}
+-	cycle_counter_ret = cpu_counter->total_cycle_counter;
+-	spin_unlock_irqrestore(&cpu_counter->lock, flags);
+-
+-	return cycle_counter_ret;
+-}
+-
+ static int
+ qcom_cpufreq_hw_target_index(struct cpufreq_policy *policy,
+ 			     unsigned int index)
+@@ -295,10 +277,6 @@ qcom_cpufreq_hw_target_index(struct cpufreq_policy *policy,
+ 		writel_relaxed(index, c->reg_bases[REG_PERF_STATE]);
+ 	}
+ 
+-	arch_set_freq_scale(policy->related_cpus,
+-			    policy->freq_table[index].frequency,
+-			    policy->cpuinfo.max_freq);
+-
+ 	return 0;
+ }
+ 
+@@ -326,7 +304,21 @@ qcom_cpufreq_hw_fast_switch(struct cpufreq_policy *policy,
+ {
+ 	int index;
+ 
+-	index = policy->cached_resolved_idx;
++	/*
++	 * Do not trust policy->cached_resolved_idx here: it is only
++	 * refreshed inside cpufreq_driver_resolve_freq() and is never
++	 * invalidated when policy->max changes (cpufreq_set_policy()
++	 * clears cached_target_freq but not cached_resolved_idx). If
++	 * fast_switch() races a limits update, the cache can still
++	 * point at an index above the current policy->max, letting a
++	 * single fast_switch call briefly select a frequency above the
++	 * user-configured ceiling (observed: transient jumps to the
++	 * top-of-LUT frequency on the Prime domain). Re-clamp and
++	 * re-resolve against the live policy on every call instead.
++	 */
++	target_freq = clamp_val(target_freq, policy->min, policy->max);
++	index = cpufreq_frequency_table_target(policy, target_freq,
++						CPUFREQ_RELATION_L);
+ 	if (index < 0)
+ 		return 0;
+ 
+@@ -367,7 +359,7 @@ static int qcom_cpufreq_hw_cpu_init(struct cpufreq_policy *policy)
+ 	policy->driver_data = c;
+ 	policy->dvfs_possible_from_any_cpu = true;
+ 
+-	em_register_perf_domain(policy->cpus, ret, &em_cb);
++	em_dev_register_perf_domain(cpu_dev, ret, &em_cb, policy->cpus, true);
+ 
+ 	if (c->dcvsh_irq > 0 && !c->is_irq_requested) {
+ 		snprintf(c->dcvsh_irq_name, sizeof(c->dcvsh_irq_name),
+@@ -382,6 +374,8 @@ static int qcom_cpufreq_hw_cpu_init(struct cpufreq_policy *policy)
+ 
+ 		c->is_irq_requested = true;
+ 		c->is_irq_enabled = true;
++
++		sysfs_attr_init(&c->freq_limit_attr.attr);
+ 		c->freq_limit_attr.attr.name = "dcvsh_freq_limit";
+ 		c->freq_limit_attr.show = dcvsh_freq_limit_show;
+ 		c->freq_limit_attr.attr.mode = 0444;
+@@ -404,6 +398,12 @@ static void qcom_cpufreq_ready(struct cpufreq_policy *policy)
+ 	struct device_node *np;
+ 	unsigned int cpu = policy->cpu;
+ 
++	struct cpufreq_qcom *c = qcom_freq_domain_map[cpu];
++
++	mutex_lock(&c->dcvsh_lock);
++	c->exited = true;
++	mutex_unlock(&c->dcvsh_lock);
++
+ 	if (cdev[cpu])
+ 		return;
+ 
+@@ -428,7 +428,7 @@ static void qcom_cpufreq_ready(struct cpufreq_policy *policy)
+ }
+ 
+ static struct cpufreq_driver cpufreq_qcom_hw_driver = {
+-	.flags		= CPUFREQ_STICKY | CPUFREQ_NEED_INITIAL_FREQ_CHECK |
++	.flags		= CPUFREQ_NEED_INITIAL_FREQ_CHECK |
+ 			  CPUFREQ_HAVE_GOVERNOR_PER_POLICY,
+ 	.verify		= cpufreq_generic_frequency_table_verify,
+ 	.target_index	= qcom_cpufreq_hw_target_index,
+@@ -441,20 +441,57 @@ static struct cpufreq_driver cpufreq_qcom_hw_driver = {
+ 	.ready		= qcom_cpufreq_ready,
+ };
+ 
++static bool of_find_freq(u32 *of_table, int of_len, long frequency)
++{
++	int i;
++
++	if (!of_table)
++		return true;
++
++	for (i = 0; i < of_len; i++) {
++		if (frequency == of_table[i])
++			return true;
++	}
++
++	return false;
++}
++
+ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
+-				    struct cpufreq_qcom *c)
++				    struct cpufreq_qcom *c,
++				    int domain_index)
+ {
+ 	struct device *dev = &pdev->dev, *cpu_dev;
+ 	void __iomem *base_freq, *base_volt;
+ 	u32 data, src, lval, i, core_count, prev_cc, prev_freq, cur_freq, volt;
+ 	u32 vc;
+ 	unsigned long cpu;
++	int ret, of_len;
++	u32 *of_table = NULL;
++	char tbl_name[] = "qcom,cpufreq-table-##";
+ 
+ 	c->table = devm_kcalloc(dev, lut_max_entries + 1,
+ 				sizeof(*c->table), GFP_KERNEL);
+ 	if (!c->table)
+ 		return -ENOMEM;
+ 
++	snprintf(tbl_name, sizeof(tbl_name), "qcom,cpufreq-table-%d",
++		 domain_index);
++	if (of_find_property(dev->of_node, tbl_name, &of_len) && of_len > 0) {
++		of_len /= sizeof(*of_table);
++
++		of_table = devm_kcalloc(dev, of_len, sizeof(*of_table),
++					GFP_KERNEL);
++		if (!of_table) {
++			ret = -ENOMEM;
++			goto err_cpufreq_table;
++		}
++
++		ret = of_property_read_u32_array(dev->of_node, tbl_name,
++						 of_table, of_len);
++		if (ret)
++			goto err_of_table;
++	}
++
+ 	spin_lock_init(&c->skip_data.lock);
+ 	base_freq = c->reg_bases[REG_FREQ_LUT_TABLE];
+ 	base_volt = c->reg_bases[REG_VOLT_LUT_TABLE];
+@@ -481,38 +518,41 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
+ 		dev_dbg(dev, "index=%d freq=%d, core_count %d\n",
+ 			i, c->table[i].frequency, core_count);
+ 
+-		if (core_count != c->max_cores) {
+-			if (core_count == (c->max_cores - 1)) {
+-				c->skip_data.skip = true;
+-				c->skip_data.high_temp_index = i;
+-				c->skip_data.freq = cur_freq;
+-				c->skip_data.cc = core_count;
+-				c->skip_data.final_index = i + 1;
+-				c->skip_data.low_temp_index = i + 1;
+-				c->skip_data.prev_freq =
+-						c->table[i-1].frequency;
+-				c->skip_data.prev_index = i - 1;
+-				c->skip_data.prev_cc = prev_cc;
+-			} else {
+-				cur_freq = CPUFREQ_ENTRY_INVALID;
+-				c->table[i].flags = CPUFREQ_BOOST_FREQ;
++		if (!of_find_freq(of_table, of_len, c->table[i].frequency)) {
++			c->table[i].frequency = CPUFREQ_ENTRY_INVALID;
++			cur_freq = CPUFREQ_ENTRY_INVALID;
++		} else {
++			if (core_count != c->max_cores) {
++				if (core_count == (c->max_cores - 1)) {
++					c->skip_data.skip = true;
++					c->skip_data.high_temp_index = i;
++					c->skip_data.freq = cur_freq;
++					c->skip_data.cc = core_count;
++					c->skip_data.final_index = i + 1;
++					c->skip_data.low_temp_index = i + 1;
++					c->skip_data.prev_freq =
++							c->table[i-1].frequency;
++					c->skip_data.prev_index = i - 1;
++					c->skip_data.prev_cc = prev_cc;
++				} else {
++					cur_freq = CPUFREQ_ENTRY_INVALID;
++					c->table[i].flags = CPUFREQ_BOOST_FREQ;
++				}
+ 			}
+-		}
+ 
+-		/*
+-		 * Two of the same frequencies with the same core counts means
+-		 * end of table.
+-		 */
+-		if (i > 0 && c->table[i - 1].frequency ==
+-				c->table[i].frequency) {
+-			if (prev_cc == core_count) {
+-				struct cpufreq_frequency_table *prev =
+-							&c->table[i - 1];
+-
+-				if (prev_freq == CPUFREQ_ENTRY_INVALID)
+-					prev->flags = CPUFREQ_BOOST_FREQ;
++			/*
++			 * Two of the same frequencies with the same core counts means
++			 * end of table.
++			 */
++			if (i > 0 && c->table[i - 1].frequency ==
++					c->table[i].frequency) {
++					struct cpufreq_frequency_table *prev =
++								&c->table[i - 1];
++
++					if (prev_freq == CPUFREQ_ENTRY_INVALID)
++						prev->flags = CPUFREQ_BOOST_FREQ;
++				break;
+ 			}
+-			break;
+ 		}
+ 
+ 		prev_cc = core_count;
+@@ -530,6 +570,9 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
+ 	c->lut_max_entries = i;
+ 	c->table[i].frequency = CPUFREQ_TABLE_END;
+ 
++	if (of_table)
++			devm_kfree(dev, of_table);
++
+ 	if (c->skip_data.skip) {
+ 		pr_info("%s Skip: Index[%u], Frequency[%u], Core Count %u, Final Index %u Actual Index %u Prev_Freq[%u] Prev_Index[%u] Prev_CC[%u]\n",
+ 				__func__, c->skip_data.high_temp_index,
+@@ -542,6 +585,12 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
+ 	}
+ 
+ 	return 0;
++
++err_of_table:
++	devm_kfree(dev, of_table);
++err_cpufreq_table:
++	devm_kfree(dev, c->table);
++	return ret;
+ }
+ 
+ static int qcom_get_related_cpus(int index, struct cpumask *m)
+@@ -625,7 +674,7 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
+ 	c->xo_rate = xo_rate;
+ 	c->cpu_hw_rate = cpu_hw_rate;
+ 
+-	ret = qcom_cpufreq_hw_read_lut(pdev, c);
++	ret = qcom_cpufreq_hw_read_lut(pdev, c, index);
+ 	if (ret) {
+ 		dev_err(dev, "Domain-%d failed to read LUT\n", index);
+ 		return ret;
+@@ -635,7 +684,7 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
+ 		c->dcvsh_irq = of_irq_get(dev->of_node, index);
+ 		if (c->dcvsh_irq > 0) {
+ 			mutex_init(&c->dcvsh_lock);
+-			INIT_DEFERRABLE_WORK(&c->freq_poll_work,
++			INIT_DELAYED_WORK(&c->freq_poll_work,
+ 					limits_dcvsh_poll);
+ 		}
+ 	}
+@@ -824,9 +873,6 @@ static int cpufreq_hw_register_cooling_device(struct platform_device *pdev)
+ 
+ static int qcom_cpufreq_hw_driver_probe(struct platform_device *pdev)
+ {
+-	struct cpu_cycle_counter_cb cycle_counter_cb = {
+-		.get_cpu_cycle_counter = qcom_cpufreq_get_cpu_cycle_counter,
+-	};
+ 	int rc, cpu;
+ 
+ 	/* Get the bases of cpufreq for domains */
+@@ -845,12 +891,6 @@ static int qcom_cpufreq_hw_driver_probe(struct platform_device *pdev)
+ 	for_each_possible_cpu(cpu)
+ 		spin_lock_init(&qcom_cpufreq_counter[cpu].lock);
+ 
+-	rc = register_cpu_cycle_counter_cb(&cycle_counter_cb);
+-	if (rc) {
+-		dev_err(&pdev->dev, "cycle counter cb failed to register\n");
+-		return rc;
+-	}
+-
+ 	dev_dbg(&pdev->dev, "QCOM CPUFreq HW driver initialized\n");
+ 	of_platform_populate(pdev->dev.of_node, NULL, NULL, &pdev->dev);
+ 
+diff --git a/drivers/net/ethernet/qualcomm/rmnet/rmnet_vnd.c b/drivers/net/ethernet/qualcomm/rmnet/rmnet_vnd.c
+index 6d7dc7b5d22874b6b9504499ad00eeebf60aef7f..a2299a7f988928fa7aa40924149e280c97793240 100644
+--- a/drivers/net/ethernet/qualcomm/rmnet/rmnet_vnd.c
++++ b/drivers/net/ethernet/qualcomm/rmnet/rmnet_vnd.c
+@@ -181,9 +181,6 @@ static u16 rmnet_vnd_select_queue(struct net_device *dev,
+ 						 skb->len,
+ 						 &boost_trigger,
+ 						 &boost_period);
+-
+-		if (boost_trigger)
+-			set_task_boost(1, boost_period);
+ 	}
+ 
+ 	return (txq < dev->real_num_tx_queues) ? txq : 0;
+diff --git a/drivers/thermal/cpu_cooling.c b/drivers/thermal/cpu_cooling.c
+index bcef1d1603273b25854dcf3faa377b0171003e84..3aa19c2083f1160b7593cab49ae92fc3934adc2f 100644
+--- a/drivers/thermal/cpu_cooling.c
++++ b/drivers/thermal/cpu_cooling.c
+@@ -424,6 +424,7 @@ static int cpufreq_set_cur_state(struct thermal_cooling_device *cdev,
+ {
+ 	struct cpufreq_cooling_device *cpufreq_cdev = cdev->devdata;
+ 	unsigned int clip_freq;
++	struct cpumask *cpus;
+ 
+ 	/* Request state should be less than max_level */
+ 	if (WARN_ON(state > cpufreq_cdev->max_level))
+@@ -437,6 +438,9 @@ static int cpufreq_set_cur_state(struct thermal_cooling_device *cdev,
+ 	cpufreq_cdev->cpufreq_state = state;
+ 	cpufreq_cdev->clipped_freq = clip_freq;
+ 
++	cpus = cpufreq_cdev->policy->related_cpus;
++	arch_update_thermal_pressure(cpus, clip_freq);
++
+ 	/* Check if the device has a platform mitigation function that
+ 	 * can handle the CPU freq mitigation, if not, notify cpufreq
+ 	 * framework.
+@@ -687,7 +691,7 @@ __cpufreq_cooling_register(struct device_node *np,
+ 		struct em_perf_domain *em = em_cpu_get(policy->cpu);
+ 
+ 		if (!em || !cpumask_equal(policy->related_cpus,
+-					  to_cpumask(em->cpus))) {
++					  em_span_cpus(em))) {
+ 			cdev = ERR_PTR(-EINVAL);
+ 			goto free_idle_time;
+ 		}
+diff --git a/drivers/thermal/qcom/msm_lmh_dcvs.c b/drivers/thermal/qcom/msm_lmh_dcvs.c
+index efdde7742cd4efd665cedd4a4cbd09527357a5ff..e4c43fc1968b6c98f3d9e552707597ebc8c282ef 100644
+--- a/drivers/thermal/qcom/msm_lmh_dcvs.c
++++ b/drivers/thermal/qcom/msm_lmh_dcvs.c
+@@ -181,7 +181,7 @@ static unsigned long limits_mitigation_notify(struct limits_dcvs_hw *hw)
+ 
+ 	if (max_cpu_ct == cpumask_weight(&hw->core_map))
+ 		max_limit = max_cpu_limit;
+-	sched_update_cpu_freq_min_max(&hw->core_map, 0, max_limit);
++
+ 	pr_debug("CPU:%d max limit:%lu\n", cpumask_first(&hw->core_map),
+ 			max_limit);
+ 	trace_lmh_dcvs_freq(cpumask_first(&hw->core_map), max_limit);
+diff --git a/fs/proc/base.c b/fs/proc/base.c
+index 05879da0afb23158b276c9d5f318b231f1c632e4..f51ef7dd4db3b4504cfe0db17dc69bf7ee4f19d9 100644
+--- a/fs/proc/base.c
++++ b/fs/proc/base.c
+@@ -1531,186 +1531,6 @@ static const struct file_operations proc_pid_sched_wake_up_idle_operations = {
+ 
+ #endif	/* CONFIG_SMP */
+ 
+-#ifdef CONFIG_SCHED_WALT
+-
+-static int sched_init_task_load_show(struct seq_file *m, void *v)
+-{
+-	struct inode *inode = m->private;
+-	struct task_struct *p;
+-
+-	p = get_proc_task(inode);
+-	if (!p)
+-		return -ESRCH;
+-
+-	seq_printf(m, "%d\n", sched_get_init_task_load(p));
+-
+-	put_task_struct(p);
+-
+-	return 0;
+-}
+-
+-static ssize_t
+-sched_init_task_load_write(struct file *file, const char __user *buf,
+-	    size_t count, loff_t *offset)
+-{
+-	struct inode *inode = file_inode(file);
+-	struct task_struct *p;
+-	char buffer[PROC_NUMBUF];
+-	int init_task_load, err;
+-
+-	memset(buffer, 0, sizeof(buffer));
+-	if (count > sizeof(buffer) - 1)
+-		count = sizeof(buffer) - 1;
+-	if (copy_from_user(buffer, buf, count)) {
+-		err = -EFAULT;
+-		goto out;
+-	}
+-
+-	err = kstrtoint(strstrip(buffer), 0, &init_task_load);
+-	if (err)
+-		goto out;
+-
+-	p = get_proc_task(inode);
+-	if (!p)
+-		return -ESRCH;
+-
+-	err = sched_set_init_task_load(p, init_task_load);
+-
+-	put_task_struct(p);
+-
+-out:
+-	return err < 0 ? err : count;
+-}
+-
+-static int sched_init_task_load_open(struct inode *inode, struct file *filp)
+-{
+-	return single_open(filp, sched_init_task_load_show, inode);
+-}
+-
+-static const struct file_operations proc_pid_sched_init_task_load_operations = {
+-	.open		= sched_init_task_load_open,
+-	.read		= seq_read,
+-	.write		= sched_init_task_load_write,
+-	.llseek		= seq_lseek,
+-	.release	= single_release,
+-};
+-
+-static int sched_group_id_show(struct seq_file *m, void *v)
+-{
+-	struct inode *inode = m->private;
+-	struct task_struct *p;
+-
+-	p = get_proc_task(inode);
+-	if (!p)
+-		return -ESRCH;
+-
+-	seq_printf(m, "%d\n", sched_get_group_id(p));
+-
+-	put_task_struct(p);
+-
+-	return 0;
+-}
+-
+-static ssize_t
+-sched_group_id_write(struct file *file, const char __user *buf,
+-	    size_t count, loff_t *offset)
+-{
+-	struct inode *inode = file_inode(file);
+-	struct task_struct *p;
+-	char buffer[PROC_NUMBUF];
+-	int group_id, err;
+-
+-	memset(buffer, 0, sizeof(buffer));
+-	if (count > sizeof(buffer) - 1)
+-		count = sizeof(buffer) - 1;
+-	if (copy_from_user(buffer, buf, count)) {
+-		err = -EFAULT;
+-		goto out;
+-	}
+-
+-	err = kstrtoint(strstrip(buffer), 0, &group_id);
+-	if (err)
+-		goto out;
+-
+-	p = get_proc_task(inode);
+-	if (!p)
+-		return -ESRCH;
+-
+-	err = sched_set_group_id(p, group_id);
+-
+-	put_task_struct(p);
+-
+-out:
+-	return err < 0 ? err : count;
+-}
+-
+-static int sched_group_id_open(struct inode *inode, struct file *filp)
+-{
+-	return single_open(filp, sched_group_id_show, inode);
+-}
+-
+-static const struct file_operations proc_pid_sched_group_id_operations = {
+-	.open		= sched_group_id_open,
+-	.read		= seq_read,
+-	.write		= sched_group_id_write,
+-	.llseek		= seq_lseek,
+-	.release	= single_release,
+-};
+-
+-static int sched_low_latency_show(struct seq_file *m, void *v)
+-{
+-	struct inode *inode = m->private;
+-	struct task_struct *p;
+-	bool low_latency;
+-
+-	p = get_proc_task(inode);
+-	if (!p)
+-		return -ESRCH;
+-
+-	low_latency = p->low_latency;
+-	seq_printf(m, "%d\n", low_latency);
+-
+-	put_task_struct(p);
+-
+-	return 0;
+-}
+-
+-static ssize_t
+-sched_low_latency_write(struct file *file, const char __user *buf,
+-	    size_t count, loff_t *offset)
+-{
+-	struct task_struct *p = get_proc_task(file_inode(file));
+-	bool low_latency;
+-	int err;
+-
+-	if (!p)
+-		return -ESRCH;
+-
+-	err =  kstrtobool_from_user(buf, count, &low_latency);
+-	if (err)
+-		goto out;
+-
+-	p->low_latency = low_latency;
+-out:
+-	put_task_struct(p);
+-	return err < 0 ? err : count;
+-}
+-
+-static int sched_low_latency_open(struct inode *inode, struct file *filp)
+-{
+-	return single_open(filp, sched_low_latency_show, inode);
+-}
+-
+-static const struct file_operations proc_pid_sched_low_latency_operations = {
+-	.open		= sched_low_latency_open,
+-	.read		= seq_read,
+-	.write		= sched_low_latency_write,
+-	.llseek		= seq_lseek,
+-	.release	= single_release,
+-};
+-
+-#endif	/* CONFIG_SCHED_WALT */
+-
+ #ifdef CONFIG_SCHED_AUTOGROUP
+ /*
+  * Print out autogroup related information:
+@@ -3431,13 +3251,6 @@ static const struct pid_entry tgid_base_stuff[] = {
+ #ifdef CONFIG_SMP
+ 	REG("sched_wake_up_idle", 00644, proc_pid_sched_wake_up_idle_operations),
+ #endif
+-#ifdef CONFIG_SCHED_WALT
+-	REG("sched_init_task_load", 00644, proc_pid_sched_init_task_load_operations),
+-	REG("sched_group_id", 00666, proc_pid_sched_group_id_operations),
+-	REG("sched_boost", 0666,  proc_task_boost_enabled_operations),
+-	REG("sched_boost_period_ms", 0666, proc_task_boost_period_operations),
+-	REG("sched_low_latency", 00666, proc_pid_sched_low_latency_operations),
+-#endif
+ #ifdef CONFIG_SCHED_DEBUG
+ 	REG("sched",      S_IRUGO|S_IWUSR, proc_pid_sched_operations),
+ #endif
+diff --git a/include/linux/arch_topology.h b/include/linux/arch_topology.h
+index 7e5a33ea8df084afb096e5aa0aa20604fc91edec..825c02e80cca0220c9dea65c57cac56f27d96389 100644
+--- a/include/linux/arch_topology.h
++++ b/include/linux/arch_topology.h
+@@ -25,6 +25,21 @@ unsigned long topology_get_cpu_scale(struct sched_domain *sd, int cpu)
+ 
+ void topology_set_cpu_scale(unsigned int cpu, unsigned long capacity);
+ 
++bool topology_scale_freq_invariant(void);
++
++DECLARE_PER_CPU(unsigned long, thermal_pressure);
++
++static inline
++unsigned long topology_get_thermal_pressure(int cpu)
++{
++	return per_cpu(thermal_pressure, cpu);
++}
++
++void topology_set_thermal_pressure(const struct cpumask *cpus, unsigned long th_pressure);
++
++void topology_update_thermal_pressure(const struct cpumask *cpus,
++				      unsigned long capped_freq);
++					  
+ DECLARE_PER_CPU(unsigned long, freq_scale);
+ 
+ static inline
+@@ -41,4 +56,14 @@ unsigned long topology_get_max_freq_scale(struct sched_domain *sd, int cpu)
+ 	return per_cpu(max_freq_scale, cpu);
+ }
+ 
++DECLARE_PER_CPU(unsigned long, arch_min_freq_scale);
++
++static inline unsigned long topology_get_min_freq_scale(int cpu)
++{
++	return per_cpu(arch_min_freq_scale, cpu);
++}
++
++void topology_set_min_freq_scale(const struct cpumask *cpus,
++				 unsigned long min_freq, unsigned long max_freq);
++
+ #endif /* _LINUX_ARCH_TOPOLOGY_H_ */
+diff --git a/include/linux/cgroup_subsys.h b/include/linux/cgroup_subsys.h
+index 8996c092568bc233a2aa7df33717f8c9690b95b6..acb77dcff3b41dbb5d265ee358b1a6958d809c11 100644
+--- a/include/linux/cgroup_subsys.h
++++ b/include/linux/cgroup_subsys.h
+@@ -21,10 +21,6 @@ SUBSYS(cpu)
+ SUBSYS(cpuacct)
+ #endif
+ 
+-#if IS_ENABLED(CONFIG_SCHED_TUNE)
+-SUBSYS(schedtune)
+-#endif
+-
+ #if IS_ENABLED(CONFIG_BLK_CGROUP)
+ SUBSYS(io)
+ #endif
+diff --git a/include/linux/cpufreq.h b/include/linux/cpufreq.h
+index 3c2bd80ae69d9c062a3b0c7dbe4a41c95d0d1189..e1914f0f9bdf7982f26e8ab72decf9bf9455c52d 100644
+--- a/include/linux/cpufreq.h
++++ b/include/linux/cpufreq.h
+@@ -120,6 +120,12 @@ struct cpufreq_policy {
+ 	bool			fast_switch_possible;
+ 	bool			fast_switch_enabled;
+ 
++	/*
++	 * Set if the CPUFREQ_GOV_STRICT_TARGET flag is set for the current
++	 * governor.
++	 */
++	bool			strict_target;
++
+ 	/*
+ 	 * Preferred average time interval between consecutive invocations of
+ 	 * the driver to set the frequency for this policy.  To be set by the
+@@ -193,6 +199,7 @@ u64 get_cpu_idle_time(unsigned int cpu, u64 *wall, int io_busy);
+ int cpufreq_get_policy(struct cpufreq_policy *policy, unsigned int cpu);
+ void cpufreq_update_policy(unsigned int cpu);
+ bool have_governor_per_policy(void);
++bool cpufreq_supports_freq_invariance(void);
+ struct kobject *get_governor_parent_kobj(struct cpufreq_policy *policy);
+ void cpufreq_enable_fast_switch(struct cpufreq_policy *policy);
+ void cpufreq_disable_fast_switch(struct cpufreq_policy *policy);
+@@ -209,6 +216,10 @@ static inline unsigned int cpufreq_quick_get_max(unsigned int cpu)
+ {
+ 	return 0;
+ }
++static inline bool cpufreq_supports_freq_invariance(void)
++{
++	return false;
++}
+ static inline void disable_cpufreq(void) { }
+ #endif
+ 
+@@ -265,7 +276,7 @@ __ATTR(_name, 0644, show_##_name, store_##_name)
+ 
+ struct cpufreq_driver {
+ 	char		name[CPUFREQ_NAME_LEN];
+-	u8		flags;
++	u16		flags;
+ 	void		*driver_data;
+ 
+ 	/* needed by all drivers */
+@@ -286,15 +297,15 @@ struct cpufreq_driver {
+ 					unsigned int index);
+ 	unsigned int	(*fast_switch)(struct cpufreq_policy *policy,
+ 				       unsigned int target_freq);
+-
+ 	/*
+-	 * Caches and returns the lowest driver-supported frequency greater than
+-	 * or equal to the target frequency, subject to any driver limitations.
+-	 * Does not set the frequency. Only to be implemented for drivers with
+-	 * target().
++	 * ->fast_switch() replacement for drivers that use an internal
++	 * representation of performance levels and can pass hints other than
++	 * the target performance level to the hardware.
+ 	 */
+-	unsigned int	(*resolve_freq)(struct cpufreq_policy *policy,
+-					unsigned int target_freq);
++	void		(*adjust_perf)(unsigned int cpu,
++				       unsigned long min_perf,
++				       unsigned long target_perf,
++				       unsigned long capacity);
+ 
+ 	/*
+ 	 * Only for drivers with target_index() and CPUFREQ_ASYNC_NOTIFICATION
+@@ -338,15 +349,14 @@ struct cpufreq_driver {
+ };
+ 
+ /* flags */
+-#define CPUFREQ_STICKY		(1 << 0)	/* driver isn't removed even if
+-						   all ->init() calls failed */
+-#define CPUFREQ_CONST_LOOPS	(1 << 1)	/* loops_per_jiffy or other
+-						   kernel "constants" aren't
+-						   affected by frequency
+-						   transitions */
+-#define CPUFREQ_PM_NO_WARN	(1 << 2)	/* don't warn on suspend/resume
+-						   speed mismatches */
+-
++#define CPUFREQ_NEED_UPDATE_LIMITS	(1 << 0)	/* driver isn't removed even if
++							   all ->init() calls failed */
++#define CPUFREQ_CONST_LOOPS		(1 << 1)	/* loops_per_jiffy or other
++							   kernel "constants" aren't
++							   affected by frequency
++							   transitions */
++#define CPUFREQ_PM_NO_WARN		(1 << 2)	/* don't warn on suspend/resume
++							   speed mismatches */
+ /*
+  * This should be set by platforms having multiple clock-domains, i.e.
+  * supporting multiple policies. With this sysfs directories of governor would
+@@ -380,6 +390,7 @@ struct cpufreq_driver {
+ int cpufreq_register_driver(struct cpufreq_driver *driver_data);
+ int cpufreq_unregister_driver(struct cpufreq_driver *driver_data);
+ 
++bool cpufreq_driver_test_flags(u16 flags);
+ const char *cpufreq_get_current_driver(void);
+ void *cpufreq_get_driver_data(void);
+ 
+@@ -509,21 +520,37 @@ struct cpufreq_governor {
+ 					 char *buf);
+ 	int	(*store_setspeed)	(struct cpufreq_policy *policy,
+ 					 unsigned int freq);
+-	/* For governors which change frequency dynamically by themselves */
+-	bool			dynamic_switching;
+ 	struct list_head	governor_list;
+ 	struct module		*owner;
++	u8			flags;
+ };
+ 
++/* Governor flags */
++
++/* For governors which change frequency dynamically by themselves */
++#define CPUFREQ_GOV_DYNAMIC_SWITCHING	BIT(0)
++
++/* For governors wanting the target frequency to be set exactly */
++#define CPUFREQ_GOV_STRICT_TARGET	BIT(1)
++
++
+ /* Pass a target to the cpufreq driver */
+ unsigned int cpufreq_driver_fast_switch(struct cpufreq_policy *policy,
+ 					unsigned int target_freq);
++void cpufreq_driver_adjust_perf(unsigned int cpu,
++				unsigned long min_perf,
++				unsigned long target_perf,
++				unsigned long capacity);
++bool cpufreq_driver_has_adjust_perf(void);
+ int cpufreq_driver_target(struct cpufreq_policy *policy,
+ 				 unsigned int target_freq,
+ 				 unsigned int relation);
+ int __cpufreq_driver_target(struct cpufreq_policy *policy,
+ 				   unsigned int target_freq,
+ 				   unsigned int relation);
++unsigned int __resolve_freq(struct cpufreq_policy *policy,
++			    unsigned int target_freq,
++			    unsigned int relation);
+ unsigned int cpufreq_driver_resolve_freq(struct cpufreq_policy *policy,
+ 					 unsigned int target_freq);
+ unsigned int cpufreq_policy_transition_delay_us(struct cpufreq_policy *policy);
+@@ -552,6 +579,11 @@ struct gov_attr_set {
+ /* sysfs ops for cpufreq governors */
+ extern const struct sysfs_ops governor_sysfs_ops;
+ 
++static inline struct gov_attr_set *to_gov_attr_set(struct kobject *kobj)
++{
++	return container_of(kobj, struct gov_attr_set, kobj);
++}
++
+ void gov_attr_set_init(struct gov_attr_set *attr_set, struct list_head *list_node);
+ void gov_attr_set_get(struct gov_attr_set *attr_set, struct list_head *list_node);
+ unsigned int gov_attr_set_put(struct gov_attr_set *attr_set, struct list_head *list_node);
+@@ -893,8 +925,8 @@ static inline int cpufreq_frequency_table_target(struct cpufreq_policy *policy,
+ 	case CPUFREQ_RELATION_C:
+ 		return cpufreq_table_find_index_c(policy, target_freq);
+ 	default:
+-		pr_err("%s: Invalid relation: %d\n", __func__, relation);
+-		return -EINVAL;
++		WARN_ON_ONCE(1);
++		return 0;
+ 	}
+ }
+ 
+@@ -943,10 +975,19 @@ static inline void sched_cpufreq_governor_change(struct cpufreq_policy *policy,
+ extern void arch_freq_prepare_all(void);
+ extern unsigned int arch_freq_get_on_cpu(int cpu);
+ 
+-extern void arch_set_freq_scale(struct cpumask *cpus, unsigned long cur_freq,
++extern void arch_set_freq_scale(const struct cpumask *cpus,
++				unsigned long cur_freq,
+ 				unsigned long max_freq);
+-extern void arch_set_max_freq_scale(struct cpumask *cpus,
++extern void arch_set_max_freq_scale(const struct cpumask *cpus,
+ 				    unsigned long policy_max_freq);
++#ifndef arch_set_min_freq_scale
++static __always_inline
++void arch_set_min_freq_scale(const struct cpumask *cpus,
++			     unsigned long min_freq,
++			     unsigned long max_freq)
++{
++}
++#endif
+ 
+ /* the following are really really optional */
+ extern struct freq_attr cpufreq_freq_attr_scaling_available_freqs;
+@@ -959,5 +1000,4 @@ int cpufreq_generic_init(struct cpufreq_policy *policy,
+ 		struct cpufreq_frequency_table *table,
+ 		unsigned int transition_latency);
+ 
+-extern unsigned int cpuinfo_max_freq_cached;
+ #endif /* _LINUX_CPUFREQ_H */
+diff --git a/init/init_task.c b/init/init_task.c
+index 57391a4745c8e3b4c17fc63f0a2f93f6b837c9e3..4e0d5431d719129cd37dcd4137fa505155721a70 100644
+--- a/init/init_task.c
++++ b/init/init_task.c
+@@ -93,9 +93,6 @@ struct task_struct init_task
+ #endif
+ #ifdef CONFIG_CGROUP_SCHED
+ 	.sched_task_group = &root_task_group,
+-#endif
+-#ifdef CONFIG_SCHED_TUNE
+-	.stune_idx	= 0,
+ #endif
+ 	.ptraced	= LIST_HEAD_INIT(init_task.ptraced),
+ 	.ptrace_entry	= LIST_HEAD_INIT(init_task.ptrace_entry),
+diff --git a/kernel/exit.c b/kernel/exit.c
+index 0b3f4c650d9f077ed51dfc2a17c7a70553e143d9..025a7d419122e9befa1b9e84150c0d6e4c332228 100644
+--- a/kernel/exit.c
++++ b/kernel/exit.c
+@@ -881,7 +881,6 @@ void __noreturn do_exit(long code)
+ 	}
+ 
+ 	exit_signals(tsk);  /* sets PF_EXITING */
+-	sched_exit(tsk);
+ 
+ 	/* sync mm's RSS info before statistics gathering */
+ 	if (tsk->mm)
+diff --git a/kernel/fork.c b/kernel/fork.c
+index d65e76c76bc544b14be6b19bed2aa05d41c70443..f5cab41de1edfdeae67e14fcab3e2fb9b60fd7bb 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -2318,7 +2318,6 @@ static __latent_entropy struct task_struct *copy_process(
+ 	perf_event_free_task(p);
+ bad_fork_cleanup_policy:
+ 	lockdep_free_task(p);
+-	free_task_load_ptrs(p);
+ #ifdef CONFIG_NUMA
+ 	mpol_put(p->mempolicy);
+ bad_fork_cleanup_threadgroup_lock:
+diff --git a/techpack/display/msm/msm_notifier.c b/techpack/display/msm/msm_notifier.c
+index 20be9ba81de5807df3f33e65a48b07272d110655..27f1ae1cac8c519bb6e4912fd70b9206975423f3 100644
+--- a/techpack/display/msm/msm_notifier.c
++++ b/techpack/display/msm/msm_notifier.c
+@@ -95,7 +95,6 @@ static int msm_notifier_fps_chg_callback(struct notifier_block *nb,
+ 				notifier_data->refresh_rate, max_fps);
+ 
+ 		active_displays->max_fps = max_fps;
+-		sched_set_refresh_rate(max_fps);
+ 	}
+ 
+ 	return 0;

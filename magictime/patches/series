@@ -1,0 +1,18 @@
+# MagicTime scheduler series
+#
+# The patches are generated against the exact AOSP16 commit and are applied
+# in this order by ../apply-scheduler-patches.sh.
+#
+# 0001-walt-eevdf-cass-core.patch
+#   Net-adapted scheduler closure from the common ancestor
+#   a28b116d7545dd4d5c4b52becfcb803bb135c243 through MagicTime
+#   eba8dbd9d11b479cae68918826c344065a6b5d3c. It includes the WALT removal,
+#   EEVDF data model/selection, CASS, PELT/uclamp and the final rbtree fix.
+#
+# 0002-aosp-abi-thermal-platform.patch
+#   AOSP16-specific platform/vendor closure: cpufreq/thermal pressure,
+#   binder/proc/RMNET callers and the small ABI adaptations required to keep
+#   AOSP16 task_struct/cgroup and mm lifetime semantics.
+#
+# The patches intentionally do not change the stable workflow or defconfig.
+# The experimental fragment is appended only by the manual workflow.
