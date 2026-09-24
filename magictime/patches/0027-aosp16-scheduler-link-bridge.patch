@@ -1,0 +1,140 @@
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 3b679bbd28d4ec79cdd5a59cf4038e7ce6b419a4..a8d57fc9f027cca45c8a9fe65872ab55a735fc63 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -8782,6 +8782,46 @@ int sched_cpu_dying(unsigned int cpu)
+ 	sched_core_cpu_dying(cpu);
+ 	return 0;
+ }
++
++/*
++ * The AOSP16 vendor isolation entry points were tied to the removed
++ * migrate_tasks() primitive. Keep the calls fail-closed until a compatible
++ * EEVDF task-migration implementation is provided; callers can then fall back
++ * to their normal thermal/hotplug policy instead of marking a CPU isolated
++ * without actually quiescing it.
++ */
++int sched_isolate_count(const cpumask_t *mask, bool include_offline)
++{
++	cpumask_t count_mask;
++
++	if (include_offline) {
++		cpumask_complement(&count_mask, cpu_online_mask);
++		cpumask_or(&count_mask, &count_mask, cpu_isolated_mask);
++		cpumask_and(&count_mask, &count_mask, mask);
++	} else {
++		cpumask_and(&count_mask, mask, cpu_isolated_mask);
++	}
++
++	return cpumask_weight(&count_mask);
++}
++
++int sched_isolate_cpu(int cpu)
++{
++	(void)cpu;
++	return -EOPNOTSUPP;
++}
++
++int sched_unisolate_cpu_unlocked(int cpu)
++{
++	if (cpu < 0 || cpu >= nr_cpu_ids)
++		return -EINVAL;
++	return 0;
++}
++
++int sched_unisolate_cpu(int cpu)
++{
++	return sched_unisolate_cpu_unlocked(cpu);
++}
+ #endif
+ 
+ void __init sched_init_smp(void)
+diff --git a/kernel/sched/psi.c b/kernel/sched/psi.c
+index 9fcf8c31b8e7add3b50941f5f01148195a34ae5a..a8f27fa978d110f0d03015289ca984da89e1b318 100644
+--- a/kernel/sched/psi.c
++++ b/kernel/sched/psi.c
+@@ -906,6 +906,32 @@ void psi_task_change(struct task_struct *task, int clear, int set)
+ 	}
+ }
+ 
++/*
++ * AOSP16's PSI implementation tracks runnable, I/O-wait and memstall task
++ * counts, but has no separate IRQ pressure bucket. Keep the scheduler hook
++ * callable while preserving the AOSP16 accounting model.
++ */
++void psi_task_switch(struct task_struct *prev, struct task_struct *next,
++		     bool sleep)
++{
++	(void)sleep;
++
++	if (prev->pid)
++		psi_task_change(prev, TSK_RUNNING, 0);
++	if (next->pid)
++		psi_task_change(next, 0, TSK_RUNNING);
++}
++
++#ifdef CONFIG_IRQ_TIME_ACCOUNTING
++void psi_account_irqtime(struct rq *rq, struct task_struct *curr,
++			 struct task_struct *prev)
++{
++	(void)rq;
++	(void)curr;
++	(void)prev;
++}
++#endif
++
+ void psi_memstall_tick(struct task_struct *task, int cpu)
+ {
+ 	struct psi_group *group;
+diff --git a/kernel/smp.c b/kernel/smp.c
+index 088beb008cf34893687345e1432f55dbac1075fb..9ed5726e760d6ac25050cce5fe96457ff421b57d 100644
+--- a/kernel/smp.c
++++ b/kernel/smp.c
+@@ -37,7 +37,7 @@ static DEFINE_PER_CPU_SHARED_ALIGNED(struct call_function_data, cfd_data);
+ 
+ static DEFINE_PER_CPU_SHARED_ALIGNED(struct llist_head, call_single_queue);
+ 
+-static void flush_smp_call_function_queue(bool warn_cpu_offline);
++static void __flush_smp_call_function_queue(bool warn_cpu_offline);
+ /* CPU mask indicating which CPUs to bring online during smp_init() */
+ static bool have_boot_cpu_mask;
+ static cpumask_var_t boot_cpu_mask;
+@@ -85,7 +85,7 @@ int smpcfd_dying_cpu(unsigned int cpu)
+ 	 * ensure that the outgoing CPU doesn't go offline with work
+ 	 * still pending.
+ 	 */
+-	flush_smp_call_function_queue(false);
++	__flush_smp_call_function_queue(false);
+ 	return 0;
+ }
+ 
+@@ -192,7 +192,7 @@ static int generic_exec_single(int cpu, struct __call_single_data *csd,
+  */
+ void generic_smp_call_function_single_interrupt(void)
+ {
+-	flush_smp_call_function_queue(true);
++	__flush_smp_call_function_queue(true);
+ }
+ 
+ /**
+@@ -209,7 +209,7 @@ void generic_smp_call_function_single_interrupt(void)
+  * Loop through the call_single_queue and run all the queued callbacks.
+  * Must be called with interrupts disabled.
+  */
+-static void flush_smp_call_function_queue(bool warn_cpu_offline)
++static void __flush_smp_call_function_queue(bool warn_cpu_offline)
+ {
+ 	struct llist_head *head;
+ 	struct llist_node *entry;
+@@ -260,6 +260,11 @@ static void flush_smp_call_function_queue(bool warn_cpu_offline)
+ 	irq_work_run();
+ }
+ 
++void flush_smp_call_function_queue(void)
++{
++	__flush_smp_call_function_queue(false);
++}
++
+ /*
+  * smp_call_function_single - Run a function on a specific CPU
+  * @func: The function to run. This must be fast and non-blocking.

@@ -109,5 +109,9 @@
 #   Aligns the AOSP16 rbtree and energy-model helper APIs, and removes the
 #   Qualcomm core-control notifier that depended on the deleted WALT object.
 #
+# 0027-aosp16-scheduler-link-bridge.patch
+#   Restores AOSP16 PSI switch accounting, the SMP queue wrapper, and
+#   fail-closed vendor isolation entry points removed with the old scheduler.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.
