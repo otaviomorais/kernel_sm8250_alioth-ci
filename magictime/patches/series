@@ -89,5 +89,9 @@
 #   Removes the obsolete global cpufreq max-frequency cache; the port uses
 #   AOSP16's per-policy cpuinfo.max_freq value.
 #
+# 0022-aosp16-cpufreq-gov-attr-bridge.patch
+#   Reuses the public AOSP16 governor-attribute helper instead of defining a
+#   duplicate local conversion helper.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.
