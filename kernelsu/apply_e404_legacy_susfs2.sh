@@ -99,6 +99,16 @@ grep -q 'ksu_handle_sys_reboot' "$KSU_REPO/kernel/supercall/supercall.c" || {
     exit 1
 }
 
+# 65571d43 changes the UAPI profile field to curr_uid. Its intermediate
+# non-GKI port did not yet update every legacy policy reference, so apply the
+# small source-compatibility correction before copying the driver.
+if [ "${KSU_EXPECTED_UAPI_VERSION:-}" = "4" ]; then
+    KSU_UAPI4_PATCH="$SCRIPT_DIR/patches/ksu-uapi4-app-profile.patch"
+    git -C "$KSU_REPO" apply --check "$KSU_UAPI4_PATCH"
+    git -C "$KSU_REPO" apply "$KSU_UAPI4_PATCH"
+    echo "Correção de ABI KSU UAPI 4 (app_profile.curr_uid) aplicada."
+fi
+
 # Replace the upstream/Kowsu driver with the pinned KSU source.
 rm -rf "$KERNEL_DIR/KernelSU" "$KERNEL_DIR/drivers/kernelsu"
 cp -a "$KSU_REPO/kernel" "$KERNEL_DIR/drivers/kernelsu"
