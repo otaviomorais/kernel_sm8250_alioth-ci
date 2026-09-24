@@ -1,6 +1,9 @@
 name: Build Alioth Kernel (Experimental EEVDF/CASS)
 
 on:
+  push:
+    branches:
+      - feature/magictime-eeVdf-cass
   workflow_dispatch:
     inputs:
       droidspaces_profile:
