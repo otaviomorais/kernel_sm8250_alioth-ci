@@ -1,65 +1,64 @@
-# MagicTime EEVDF/CASS — port experimental
+# MagicTime + KernelSU-Next/SUSFS
 
-Este diretório mantém o port experimental de **EEVDF + CASS com remoção de
-WALT** para a base AOSP16 do Alioth. Ele não altera o build diário, a `main` nem
-os perfis `default`, `minimal` e `lxc` existentes.
+Este branch agora tem um workflow experimental para compilar diretamente a
+source [`TIMISONG-dev/kernel_xiaomi_sm8250`](https://github.com/TIMISONG-dev/kernel_xiaomi_sm8250/tree/magictime-new),
+substituindo o port AOSP16/EEVDF-CASS anterior. O `main`, o build diário e o
+workflow estável não são alterados.
 
-## Fontes e escopo
+## Source e pin
 
-- Base AOSP16: `PocoF3Releases/kernel_xiaomi_sm8250` no commit
-  `10f8a106de65d4fb5cd9c2f2fe2714f11d97bcd5`.
-- Referência MagicTime: `TIMISONG-dev/kernel_xiaomi_sm8250`, branch
-  `magictime-new`, commit `eba8dbd9d11b479cae68918826c344065a6b5d3c`.
-- Base comum usada para preparar a série:
-  `a28b116d7545dd4d5c4b52becfcb803bb135c243`.
+- Source: `TIMISONG-dev/kernel_xiaomi_sm8250`
+- Branch: `magictime-new`
+- Commit usado pelo CI: `eba8dbd9d11b479cae68918826c344065a6b5d3c`
+- Perfil de containers: `none` ou `lxc` via `workflow_dispatch`
 
-A série é aplicada como patches sobre a árvore AOSP16. Não substitui a árvore
-AOSP16 inteira nem copia a árvore do MagicTime. As diferenças de ABI do
-scheduler são mantidas do lado AOSP16; apenas os hunks coordenados de
-EEVDF/CASS/WALT são portados.
+O pin é intencional para que uma execução possa ser reproduzida. Uma atualização
+do kernel exige revisar e testar o commit MagicTime explicitamente no workflow.
 
-## WALT
+## KernelSU
 
-A desativação de WALT faz parte da mesma unidade do port:
+A source MagicTime contém um submódulo `KernelSU` e um symlink
+`drivers/kernelsu` para essa cópia. O pipeline:
 
-1. O objeto e os símbolos `SCHED_WALT` saem do Makefile/Kconfig.
-2. Os campos, hooks, tracepoints e sysctls exclusivamente de WALT são removidos
-   ou protegidos no conjunto scheduler portado.
-3. Os chamadores vendor que dependiam de `set_task_boost`,
-   `sched_set_refresh_rate` ou `sched_update_cpu_freq_min_max` são adaptados
-   somente quando necessário.
-4. O `.config` final falha se `CONFIG_SCHED_WALT=y`,
-   `CONFIG_SCHED_TUNE=y` ou `CONFIG_SCHED_CORE_CTL=y`.
+1. checkout do commit MagicTime sem inicializar o submódulo;
+2. remove `KernelSU`, `drivers/kernelsu`, a fiação KSU e os hooks KSU manuais
+   da própria source usando `remove-magictime-kernelsu-hooks.patch`;
+3. copia o KernelSU-Next e os arquivos SUSFS que estão em `kernelsu/`;
+4. aplica `magictime/patches/ksu-susfs-magictime.patch`, adaptado à API/filesystem
+   da source MagicTime (a ordem está em `magictime/patches/series-ksu-next`);
+5. injeta as opções KernelSU-Next/SUSFS no defconfig e valida o `.config` final.
 
-A remoção física dos arquivos WALT é incluída no primeiro patch da série. A
-auditoria final ainda deve confirmar que não há objetos WALT, referências
-vendor ou interfaces de userspace que dependam desses campos.
+O `kernelsu/apply.sh` continua compatível com o workflow estável: o quarto
+argumento é opcional e, quando ausente, usa o patch original do `main`.
 
-## Configuração
+## Gate de CI
 
-`magictime-eeVdf-cass.config` habilita:
+O workflow manual executa:
 
-- `CONFIG_SCHED_CASS=y`;
-- `CONFIG_SCHED_THERMAL_PRESSURE=y`;
-- uClamp task/group;
-- as extensões opcionais `RT_SOFTIRQ_AWARE_SCHED` e `UCLAMP_ASSIST`.
+1. o cleanup do KernelSU embutido e a instalação do KernelSU-Next + SUSFS;
+2. a geração do `.config` e a validação de todos os símbolos KSU/SUSFS;
+3. opcionalmente a aplicação e validação do perfil LXC/nspawn;
+4. a compilação de `Image`, `dtbs` e `dtbo.img` usando GitHub Actions;
+5. a verificação dos objetos `kernelsu.o` e `susfs.o`;
+6. a coleta e o upload de `Image`, `dtb`, `dtbo.img`, configuração, revisão da
+   source e AnyKernel3.
 
-`FAIR_GROUP_SCHED`, `CFS_BANDWIDTH` e `RT_GROUP_SCHED` não são desligados
-silenciosamente. A interação entre eles e EEVDF precisa de uma matriz de
-build/teste própria. `NTSYNC` é um port separado e não faz parte deste
-perfil.
+Não são feitos builds locais do kernel. O workflow é manual-only e não cria
+release.
 
-## Gate de validação
+## Escopo do scheduler
 
-O workflow manual deve:
+A source MagicTime é usada como está; portanto seus recursos de scheduler e
+WALT/schedtune/core-control fazem parte do build desta nova direção. A série
+antiga `magictime/patches/0001-walt-eevdf-cass-core.patch` e os scripts
+`apply-scheduler-patches.sh`/`validate-config.sh` permanecem apenas como
+material histórico do port AOSP16 e não são chamados pelo workflow ativo.
 
-1. aplicar a série em um checkout AOSP16 completo;
-2. gerar a configuração e executar `validate-config.sh`;
-3. compilar primeiro `kernel/sched/` e depois `Image dtbs dtbo.img`;
-4. verificar que não existem `walt.o`, `boost.o`, `sched_avg.o`, `tune.o` ou
-   `core_ctl.o`;
-5. testar boot, Binder, cgroups, RT, thermal pressure, hotplug, suspend e
-   benchmarks em aparelho real.
+`NTSYNC` continua fora do escopo deste workflow.
 
-Nenhum release é criado pelo workflow experimental. A promoção só deve
-ocorrer depois dos gates de build e runtime.
+## Promoção
+
+Build, configuração e artefatos não substituem testes de boot. Antes de promover
+qualquer resultado, é necessário flashear e testar em um aparelho Alioth:
+estabilidade, Binder, cgroups, prioridades RT, pressão térmica, hotplug,
+suspend e o comportamento de `nspawn`/LXC.

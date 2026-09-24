@@ -1,4 +1,4 @@
-name: Build Alioth Kernel (Experimental EEVDF/CASS)
+name: Build Alioth Kernel (MagicTime + KernelSU-Next/SUSFS)
 
 on:
   workflow_dispatch:
@@ -11,12 +11,11 @@ on:
         options:
           - none
           - lxc
+
 permissions:
   contents: read
 
 env:
-  AOSP16_REPO: 'PocoF3Releases/kernel_xiaomi_sm8250'
-  AOSP16_SHA: '10f8a106de65d4fb5cd9c2f2fe2714f11d97bcd5'
   MAGIC_REPO: 'TIMISONG-dev/kernel_xiaomi_sm8250'
   MAGIC_SHA: 'eba8dbd9d11b479cae68918826c344065a6b5d3c'
   DEFCONFIG: 'alioth_defconfig'
@@ -29,7 +28,7 @@ env:
 
 jobs:
   build:
-    name: Compilar perfil experimental EEVDF/CASS
+    name: Compilar MagicTime com KernelSU-Next + SUSFS
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout do Repositório CI
@@ -54,7 +53,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ${{ runner.os }}-magictime-eeVdf-cass-${{ env.AOSP16_SHA }}
+          key: ${{ runner.os }}-magictime-ksu-next-${{ env.MAGIC_SHA }}-${{ inputs.droidspaces_profile }}
+          restore-keys: |
+            ${{ runner.os }}-magictime-ksu-next-${{ env.MAGIC_SHA }}-
 
       - name: Instalar ZyC-Clang 16
         run: |
@@ -72,11 +73,11 @@ jobs:
           echo "$HOME/ccache-bin" >> "$GITHUB_PATH"
           echo "$HOME/zyc/bin" >> "$GITHUB_PATH"
 
-      - name: Checkout AOSP16 exato
+      - name: Checkout MagicTime exato
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.AOSP16_REPO }}
-          ref: ${{ env.AOSP16_SHA }}
+          repository: ${{ env.MAGIC_REPO }}
+          ref: ${{ env.MAGIC_SHA }}
           path: kernel
           fetch-depth: 1
           submodules: false
@@ -90,8 +91,8 @@ jobs:
           chmod +x kernel/scripts/ufdt/libufdt/utils/src/mkdtboimg.py
           sed -i 's/python2 \$(MKDTBO)/python3 \$(MKDTBO)/g' kernel/scripts/Makefile.lib
 
-      - name: Aplicar série EEVDF/CASS e remover WALT
-        run: bash magictime/apply-scheduler-patches.sh kernel
+      - name: Remover KernelSU embutido e instalar KernelSU-Next + SUSFS
+        run: bash magictime/apply-kernelsu-next-susfs.sh kernel
 
       - name: Aplicar perfil LXC opcional
         if: ${{ inputs.droidspaces_profile == 'lxc' }}
@@ -102,39 +103,32 @@ jobs:
             kernel/arch/arm64/configs/alioth_defconfig \
             droidspaces/lxc.config
 
-      - name: Gerar configuração experimental
+      - name: Gerar configuração final
         run: |
           set -e
-          FRAGMENT=magictime/magictime-eeVdf-cass.config
-          CONFIG=kernel/arch/arm64/configs/alioth_defconfig
-          if ! grep -q '^CONFIG_SCHED_CASS=y$' "$CONFIG"; then
-            cat "$FRAGMENT" >> "$CONFIG"
-          fi
           make -C kernel O=out $BUILD_FLAGS "$DEFCONFIG"
           make -C kernel O=out $BUILD_FLAGS olddefconfig
-          bash magictime/validate-config.sh kernel/out/.config
 
-      - name: Compilar scheduler primeiro
-        run: |
-          set -e
-          make -C kernel O=out $BUILD_FLAGS -j"$(nproc)" kernel/sched/
+      - name: Validar KernelSU-Next + SUSFS
+        run: bash magictime/validate-kernelsu-next.sh kernel kernel/out/.config
 
-      - name: Verificar ausência de objetos WALT
-        run: |
-          set -e
-          if find kernel/out/kernel/sched -type f \( \
-              -name 'walt.o' -o -name 'boost.o' -o -name 'sched_avg.o' \
-              -o -name 'tune.o' -o -name 'core_ctl.o' \) | grep -q .; then
-            echo 'ERRO: objeto WALT/schedtune encontrado' >&2
-            exit 1
-          fi
-          test -f kernel/out/kernel/sched/fair.o
-          test -f kernel/out/kernel/sched/rt.o
+      - name: Validar perfil LXC/nspawn
+        if: ${{ inputs.droidspaces_profile == 'lxc' }}
+        run: bash droidspaces/validate-lxc.sh kernel/out/.config
 
       - name: Compilar Image, dtbs e dtbo.img
         run: |
           set -e
           make -C kernel O=out $BUILD_FLAGS -j"$(nproc)" Image dtbs dtbo.img
+
+      - name: Verificar objetos KernelSU-Next + SUSFS
+        run: |
+          set -e
+          test -f kernel/out/drivers/kernelsu/kernelsu.o
+          test -f kernel/out/fs/susfs.o
+          test -f kernel/out/arch/arm64/boot/Image
+          test -f kernel/out/arch/arm64/boot/dtbo.img
+          test -n "$(find kernel/out/arch/arm64/boot/dts/vendor/qcom -type f -name '*.dtb' -print -quit)"
 
       - name: Coletar artefatos
         run: |
@@ -144,6 +138,7 @@ jobs:
           cp kernel/out/arch/arm64/boot/dtbo.img dist/dtbo.img
           cat kernel/out/arch/arm64/boot/dts/vendor/qcom/*.dtb > dist/dtb
           cp kernel/out/.config dist/kernel-config
+          printf '%s\n' '${{ env.MAGIC_SHA }}' > dist/magictime-source-revision
           test -s dist/Image
           test -s dist/dtb
           test -s dist/dtbo.img
@@ -157,11 +152,11 @@ jobs:
           cp dist/dtb ak3_pack/dtb
           cp dist/dtbo.img ak3_pack/dtbo.img
           chmod 755 ak3_pack/META-INF/com/google/android/update-binary
-          (cd ak3_pack && zip -r -X ../dist/AnyKernel3-Alioth-EEVDF-CASS.zip .)
+          (cd ak3_pack && zip -r -X "../dist/AnyKernel3-Alioth-MagicTime-KSU-Next-SUSFS.zip" .)
 
       - name: Upload de artefatos
         uses: actions/upload-artifact@v4
         with:
-          name: alioth-experimental-eeVdf-cass-${{ env.AOSP16_SHA }}
+          name: alioth-magictime-ksu-next-susfs-${{ env.MAGIC_SHA }}-${{ inputs.droidspaces_profile }}
           path: dist/
           retention-days: 14

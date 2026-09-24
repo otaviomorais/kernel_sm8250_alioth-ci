@@ -4,12 +4,21 @@ set -e
 # Script de integração do KernelSU (Next) com opção de SUSFS
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -z "$1" ]; then
-    echo "Uso: $0 <caminho_do_kernel> [enable_susfs: true|false] [defconfig_path]"
+    echo "Uso: $0 <caminho_do_kernel> [enable_susfs: true|false] [defconfig_path] [hooks_patch]"
     exit 1
 fi
 KERNEL_DIR="$(cd "$1" && pwd)"
 ENABLE_SUSFS="${2:-true}"
 CONFIG_FILE="${3:-$KERNEL_DIR/arch/arm64/configs/alioth_defconfig}"
+HOOKS_PATCH="${4:-$SCRIPT_DIR/patches/ksu_susfs_hooks.patch}"
+if [[ "$HOOKS_PATCH" != /* ]]; then
+    HOOKS_PATCH="$(cd "$(dirname "$HOOKS_PATCH")" && pwd)/$(basename "$HOOKS_PATCH")"
+fi
+
+if [[ "$ENABLE_SUSFS" == "true" && ! -f "$HOOKS_PATCH" ]]; then
+    echo "ERRO: patch de hooks SUSFS não encontrado: $HOOKS_PATCH" >&2
+    exit 1
+fi
 
 echo "======================================================"
 echo " Aplicando KernelSU (KernelSU-Next) no Kernel         "
@@ -33,11 +42,11 @@ if [ "$ENABLE_SUSFS" = "true" ]; then
     # 3. Aplicar patch de hooks do kernel
     echo "[3/4] Aplicando patches de hooks do SUSFS no Kernel..."
     cd "$KERNEL_DIR"
-    if git apply --check "$SCRIPT_DIR/patches/ksu_susfs_hooks.patch" 2>/dev/null; then
-        git apply "$SCRIPT_DIR/patches/ksu_susfs_hooks.patch"
+    if git apply --check "$HOOKS_PATCH" 2>/dev/null; then
+        git apply "$HOOKS_PATCH"
     else
         echo "AVISO: tentando git apply com 3-way..."
-        git apply -3 "$SCRIPT_DIR/patches/ksu_susfs_hooks.patch"
+        git apply -3 "$HOOKS_PATCH"
     fi
     cd - >/dev/null
 

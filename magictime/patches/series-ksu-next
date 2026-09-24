@@ -1,0 +1,4 @@
+# Active MagicTime KernelSU-Next/SUSFS integration
+# Applied by ../apply-kernelsu-next-susfs.sh after the exact MagicTime checkout.
+remove-magictime-kernelsu-hooks.patch
+ksu-susfs-magictime.patch
