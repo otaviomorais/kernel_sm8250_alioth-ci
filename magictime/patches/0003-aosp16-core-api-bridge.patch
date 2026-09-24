@@ -239,7 +239,7 @@ index cb91482bb9f66ed49153e52a63bd8651fd6d114b..3da60962d8258fe02990044f24b5f10c
  			if (best_cpu < nr_cpu_ids) {
  				rcu_read_unlock();
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 1dfefa64489823e99a4abc88dae7829c40c691eb..9c2504e3be7a2b35449fd28679e3eeb1e2d7570b 100644
+index 1dfefa64489823e99a4abc88dae7829c40c691eb..14b92869b05a20e1e5402f4f94c197816777dd31 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
 @@ -79,6 +79,17 @@
@@ -251,7 +251,7 @@ index 1dfefa64489823e99a4abc88dae7829c40c691eb..9c2504e3be7a2b35449fd28679e3eeb1
 +{
 +	int cpu;
 +
-+	cpumask_for_each(cpu, dst)
++	for_each_cpu(cpu, dst)
 +		if (cpumask_test_cpu(cpu, src))
 +			return cpu;
 +	return nr_cpu_ids;
