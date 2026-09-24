@@ -25,6 +25,15 @@ on:
         required: false
         type: boolean
         default: true
+      droidspaces_profile:
+        description: 'Perfil: default (full), minimal ou lxc (nspawn.sh --net)'
+        required: true
+        type: choice
+        default: default
+        options:
+          - default
+          - minimal
+          - lxc
       custom_boot_url:
         description: 'URL direta opcional de um boot.img base da sua ROM para injetar'
         required: false
@@ -39,6 +48,7 @@ env:
   UPSTREAM_BRANCH: 'aosp-16'
   DEVICE: 'alioth'
   DEFCONFIG: 'alioth_defconfig'
+  DROIDSPACES_DEFAULT_PROFILE: 'full'
   BUILD_FLAGS: >-
     ARCH=arm64 SUBARCH=arm64
     CC=clang AS=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
@@ -53,6 +63,34 @@ jobs:
     steps:
       - name: Checkout do Repositório CI
         uses: actions/checkout@v4
+
+      - name: Selecionar perfil Droidspaces
+        id: droidspaces_profile
+        env:
+          REQUESTED_PROFILE: ${{ github.event.inputs.droidspaces_profile }}
+        run: |
+          set -e
+          PROFILE="${REQUESTED_PROFILE:-$DROIDSPACES_DEFAULT_PROFILE}"
+          case "$PROFILE" in
+            default)
+              PROFILE=full
+              DROIDSPACES_CONFIG=droidspaces/droidspaces.config
+              ;;
+            minimal)
+              DROIDSPACES_CONFIG=droidspaces/droidspaces-minimal.config
+              ;;
+            lxc)
+              DROIDSPACES_CONFIG=droidspaces/lxc.config
+              ;;
+            *)
+              echo "Perfil Droidspaces inválido: $PROFILE" >&2
+              exit 1
+              ;;
+          esac
+          echo "Perfil Droidspaces selecionado: $PROFILE"
+          echo "profile=$PROFILE" >> "$GITHUB_OUTPUT"
+          echo "DROIDSPACES_PROFILE=$PROFILE" >> "$GITHUB_ENV"
+          echo "DROIDSPACES_CONFIG=$DROIDSPACES_CONFIG" >> "$GITHUB_ENV"
 
       - name: Checar atualizações no upstream
         id: check_upstream
@@ -72,8 +110,8 @@ jobs:
           echo "commit_msg=$COMMIT_MSG" >> "$GITHUB_OUTPUT"
           echo "commit_date=$COMMIT_DATE" >> "$GITHUB_OUTPUT"
 
-          LATEST_RELEASE_TAG=$(gh release view --json tagName --jq .tagName 2>/dev/null || echo "")
-          echo "Última release encontrada: $LATEST_RELEASE_TAG"
+          LATEST_RELEASE_TAG=$(gh release list --json tagName --jq '.[].tagName' 2>/dev/null | grep "^aosp16-.*-${DROIDSPACES_PROFILE}$" | head -n 1 || echo "")
+          echo "Última release AOSP16 (${DROIDSPACES_PROFILE}) encontrada: $LATEST_RELEASE_TAG"
 
           IS_MANUAL="${{ github.event_name == 'workflow_dispatch' }}"
           FORCE_BUILD="${{ github.event.inputs.force_build == 'true' }}"
@@ -81,7 +119,7 @@ jobs:
           if [[ "$IS_MANUAL" == "true" && "$FORCE_BUILD" == "true" ]]; then
             echo "Execução manual com force_build=true. Prosseguindo."
             echo "should_build=true" >> "$GITHUB_OUTPUT"
-          elif [[ "$LATEST_RELEASE_TAG" == *"$SHORT_SHA"* ]]; then
+          elif [[ "$LATEST_RELEASE_TAG" == *"-${SHORT_SHA}-${DROIDSPACES_PROFILE}"* ]]; then
             if [[ "$IS_MANUAL" == "true" ]]; then
               echo "Commit $SHORT_SHA já compilado, mas execução foi disparada manualmente. Prosseguindo."
               echo "should_build=true" >> "$GITHUB_OUTPUT"
@@ -116,7 +154,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ${{ runner.os }}-kernel-ccache-${{ steps.check_upstream.outputs.short_sha }}
+          key: ${{ runner.os }}-kernel-ccache-${{ steps.droidspaces_profile.outputs.profile }}-${{ steps.check_upstream.outputs.short_sha }}
           restore-keys: |
             ${{ runner.os }}-kernel-ccache-
 
@@ -172,8 +210,8 @@ jobs:
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false')
         run: |
           set -e
-          echo "Aplicando integração de Droidspaces..."
-          bash droidspaces/apply.sh kernel
+          echo "Aplicando Droidspaces (perfil: ${DROIDSPACES_PROFILE})..."
+          bash droidspaces/apply.sh kernel kernel/arch/arm64/configs/alioth_defconfig "$DROIDSPACES_CONFIG"
 
       - name: Aplicar Otimizações de Kernel (BBR, ZSTD, Kyber, PSI)
         if: steps.check_upstream.outputs.should_build == 'true'
@@ -198,6 +236,12 @@ jobs:
           set -e
           cd kernel
           make -j$(nproc) O=out $BUILD_FLAGS $DEFCONFIG
+
+      - name: Validar perfil LXC/nspawn
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_droidspaces != 'false') && steps.droidspaces_profile.outputs.profile == 'lxc'
+        run: |
+          set -e
+          bash droidspaces/validate-lxc.sh kernel/out/.config
 
       - name: Compilar Kernel (Image, dtbs, dtbo.img)
         if: steps.check_upstream.outputs.should_build == 'true'
@@ -237,7 +281,7 @@ jobs:
           cp dist/dtbo.img "$AK3_DIR/dtbo.img"
           chmod 755 "$AK3_DIR/META-INF/com/google/android/update-binary"
           
-          ZIP_NAME="AnyKernel3-Alioth-aosp16-${SHORT_SHA}.zip"
+          ZIP_NAME="AnyKernel3-Alioth-aosp16-${SHORT_SHA}-${DROIDSPACES_PROFILE}.zip"
           cd "$AK3_DIR"
           zip -r -X "../dist/$ZIP_NAME" .
           cd ..
@@ -286,7 +330,7 @@ jobs:
         if: steps.check_upstream.outputs.should_build == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: alioth-kernel-${{ steps.check_upstream.outputs.short_sha }}
+          name: alioth-kernel-${{ steps.droidspaces_profile.outputs.profile }}-${{ steps.check_upstream.outputs.short_sha }}
           path: dist/
           retention-days: 14
 
@@ -300,7 +344,7 @@ jobs:
           FULL_SHA="${{ steps.check_upstream.outputs.commit_sha }}"
           COMMIT_MSG="${{ steps.check_upstream.outputs.commit_msg }}"
           BUILD_DATE=$(date -u +'%Y-%m-%d')
-          TAG_NAME="aosp16-${BUILD_DATE}-${SHORT_SHA}"
+          TAG_NAME="aosp16-${BUILD_DATE}-${SHORT_SHA}-${DROIDSPACES_PROFILE}"
 
           KSU_STATUS="Ativado (KernelSU-Next + SUSFS completo: SUS Maps, Try Umount, Open Redirect, Auto Try Umount Bind, Hide Symbols, OverlayFS Auto Kstat)"
           if [ "${{ github.event.inputs.enable_ksu }}" = "false" ]; then
@@ -309,7 +353,18 @@ jobs:
             KSU_STATUS="Ativado (KernelSU-Next sem SUSFS)"
           fi
 
-          DROIDSPACES_STATUS="Ativado (LXC / Containers / Namespaces / binfmt_misc / CFS Bandwidth / cgroup fix)"
+          DROIDSPACES_STATUS="Ativado (perfil ${DROIDSPACES_PROFILE})"
+          case "$DROIDSPACES_PROFILE" in
+            full)
+              DROIDSPACES_STATUS="Ativado (perfil full: LXC/Containers/Namespaces)"
+              ;;
+            minimal)
+              DROIDSPACES_STATUS="Ativado (perfil minimal: namespaces essenciais)"
+              ;;
+            lxc)
+              DROIDSPACES_STATUS="Ativado (perfil lxc: nspawn.sh com --net)"
+              ;;
+          esac
           if [ "${{ github.event.inputs.enable_droidspaces }}" = "false" ]; then
             DROIDSPACES_STATUS="Desativado"
           fi
