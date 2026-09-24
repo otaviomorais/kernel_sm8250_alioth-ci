@@ -22,5 +22,9 @@
 #   Bridges softirq accounting, cpumask iteration and the AOSP16 energy-model
 #   API reported by the next CI build.
 #
+# 0005-aosp16-rbtree-waitqueue-bridge.patch
+#   Supplies the cached-rbtree insertion helper and maps the newer waitqueue,
+#   kthread and cpuset-DL hooks to their AOSP16 equivalents.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.

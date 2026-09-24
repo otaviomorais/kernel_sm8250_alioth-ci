@@ -1,0 +1,82 @@
+diff --git a/include/linux/cpuset.h b/include/linux/cpuset.h
+index fc7b6bd9bbcc671306330523c460dfe266aaaccd..03a2c6006b4deddea4edb53a5d7eed89bcbb50f9 100644
+--- a/include/linux/cpuset.h
++++ b/include/linux/cpuset.h
+@@ -57,6 +57,8 @@ extern void cpuset_update_active_cpus(void);
+ extern void cpuset_wait_for_hotplug(void);
+ extern void cpuset_lock(void);
+ extern void cpuset_unlock(void);
++static inline void inc_dl_tasks_cs(struct task_struct *task) { }
++static inline void dec_dl_tasks_cs(struct task_struct *task) { }
+ extern void cpuset_cpus_allowed(struct task_struct *p, struct cpumask *mask);
+ extern void cpuset_cpus_allowed_fallback(struct task_struct *p);
+ extern nodemask_t cpuset_mems_allowed(struct task_struct *p);
+@@ -177,6 +179,10 @@ static inline void cpuset_update_active_cpus(void)
+ }
+ 
+ static inline void cpuset_wait_for_hotplug(void) { }
++static inline void cpuset_lock(void) { }
++static inline void cpuset_unlock(void) { }
++static inline void inc_dl_tasks_cs(struct task_struct *task) { }
++static inline void dec_dl_tasks_cs(struct task_struct *task) { }
+ 
+ static inline void cpuset_cpus_allowed(struct task_struct *p,
+ 				       struct cpumask *mask)
+diff --git a/include/linux/rbtree.h b/include/linux/rbtree.h
+index fcbeed4053efbba81993fea4151a8a6a6cd6f5d1..dc43f8ed4a0da8517bb6adcaec3b2487e9a34688 100644
+--- a/include/linux/rbtree.h
++++ b/include/linux/rbtree.h
+@@ -111,6 +111,30 @@ static inline void rb_link_node(struct rb_node *node, struct rb_node *parent,
+ 	*rb_link = node;
+ }
+ 
++/* Compatibility helper for the newer cached-tree insertion API. */
++static __always_inline struct rb_node *
++rb_add_cached(struct rb_node *node, struct rb_root_cached *tree,
++		      bool (*less)(struct rb_node *, const struct rb_node *))
++{
++	struct rb_node **link = &tree->rb_root.rb_node;
++	struct rb_node *parent = NULL;
++	bool leftmost = true;
++
++	while (*link) {
++		parent = *link;
++		if (less(node, parent))
++			link = &parent->rb_left;
++		else {
++			link = &parent->rb_right;
++			leftmost = false;
++		}
++	}
++
++	rb_link_node(node, parent, link);
++	rb_insert_color_cached(node, tree, leftmost);
++	return leftmost ? node : NULL;
++}
++
+ static inline void rb_link_node_rcu(struct rb_node *node, struct rb_node *parent,
+ 				    struct rb_node **rb_link)
+ {
+diff --git a/kernel/sched/wait.c b/kernel/sched/wait.c
+index b61b189167f70ae0996347926e2442515f91905b..bb09ac7fd0ea647125ccd20b8145b98ffd74d143 100644
+--- a/kernel/sched/wait.c
++++ b/kernel/sched/wait.c
+@@ -383,7 +383,7 @@ int __sched autoremove_wake_function(struct wait_queue_entry *wq_entry,
+ 	int ret = default_wake_function(wq_entry, mode, sync, key);
+ 
+ 	if (ret)
+-		list_del_init_careful(&wq_entry->entry);
++		list_del_init(&wq_entry->entry);
+ 
+ 	return ret;
+ }
+@@ -419,7 +419,8 @@ long __sched wait_woken(struct wait_queue_entry *wq_entry, unsigned int mode,
+ 	 * or woken_wake_function() sees our store to current->state.
+ 	 */
+ 	set_current_state(mode); /* A */
+-	if (!(wq_entry->flags & WQ_FLAG_WOKEN) && !kthread_should_stop_or_park())
++	if (!(wq_entry->flags & WQ_FLAG_WOKEN) &&
++	    !(kthread_should_stop() || kthread_should_park()))
+ 		timeout = schedule_timeout(timeout);
+ 	__set_current_state(TASK_RUNNING);
+ 
