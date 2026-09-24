@@ -73,5 +73,9 @@
 #   Removes the remaining sched_set_boost coupling from cpu-boost while
 #   retaining its input-frequency boost path.
 #
+# 0018-aosp16-sysctl-bridge.patch
+#   Removes orphaned scheduler sysctl entries whose AOSP16 variables were not
+#   present in the ported scheduler.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.
