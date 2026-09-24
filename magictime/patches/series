@@ -81,5 +81,9 @@
 #   Shares IRQ-work flag definitions with AOSP16 smp_types.h to avoid duplicate
 #   enum declarations when both headers are included.
 #
+# 0020-aosp16-smp-topology-bridge.patch
+#   Removes the duplicate CSD lock bit and passes the AOSP16 sched_domain
+#   argument to topology capacity queries.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.

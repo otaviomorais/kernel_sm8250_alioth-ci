@@ -1,0 +1,34 @@
+diff --git a/drivers/base/arch_topology.c b/drivers/base/arch_topology.c
+index 1195476de9f62e60652d8d41c6fbc3b1099a1018..77108116329b826fa0bbcf1214256785df50c838 100644
+--- a/drivers/base/arch_topology.c
++++ b/drivers/base/arch_topology.c
+@@ -145,7 +145,7 @@ static ssize_t cpu_capacity_show(struct device *dev,
+ {
+ 	struct cpu *cpu = container_of(dev, struct cpu, dev);
+ 
+-	return sprintf(buf, "%lu\n", topology_get_cpu_scale(cpu->dev.id));
++	return sprintf(buf, "%lu\n", topology_get_cpu_scale(NULL, cpu->dev.id));
+ }
+ 
+ static void update_topology_flags_workfn(struct work_struct *work);
+@@ -223,7 +223,7 @@ void topology_normalize_cpu_scale(void)
+ 			capacity_scale);
+ 		topology_set_cpu_scale(cpu, capacity);
+ 		pr_debug("cpu_capacity: CPU%d cpu_capacity=%lu\n",
+-			cpu, topology_get_cpu_scale(cpu));
++			cpu, topology_get_cpu_scale(NULL, cpu));
+ 	}
+ }
+ 
+diff --git a/kernel/smp.c b/kernel/smp.c
+index 5d8404424372c79d7d7df1afc58771164f0c4e7f..088beb008cf34893687345e1432f55dbac1075fb 100644
+--- a/kernel/smp.c
++++ b/kernel/smp.c
+@@ -24,7 +24,6 @@
+ #include "smpboot.h"
+ 
+ enum {
+-	CSD_FLAG_LOCK		= 0x01,
+ 	CSD_FLAG_SYNCHRONOUS	= 0x02,
+ };
+ 
