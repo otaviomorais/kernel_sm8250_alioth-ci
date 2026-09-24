@@ -37,5 +37,9 @@
 #   Restores AOSP16's standard PSI implementation (the MagicTime RT polling
 #   PSI variant is outside this port) and declares its RCU-safe task helper.
 #
+# 0009-aosp16-psi-memstall-flag.patch
+#   Restores the AOSP16 PF_MEMSTALL task flag required by the standard PSI
+#   memstall accounting path.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.

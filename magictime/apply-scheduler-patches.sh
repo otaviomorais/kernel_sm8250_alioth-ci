@@ -26,6 +26,7 @@ patches=(
     "$SCRIPT_DIR/patches/0006-aosp16-rbtree-erase-bridge.patch"
     "$SCRIPT_DIR/patches/0007-aosp16-topology-irqwork-bridge.patch"
     "$SCRIPT_DIR/patches/0008-aosp16-psi-membarrier-bridge.patch"
+    "$SCRIPT_DIR/patches/0009-aosp16-psi-memstall-flag.patch"
 )
 
 for patch in "${patches[@]}"; do
