@@ -4,7 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EXPECTED_KSU_COMMIT="f6a1570cc7857141b8acef9b3073840f59539359"
+EXPECTED_KSU_COMMIT="${KSU_EXPECTED_COMMIT:-f6a1570cc7857141b8acef9b3073840f59539359}"
 
 if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then
     echo "Uso: $0 <kernel> <defconfig> <ksu_repo> <susfs_repo> [enable_susfs:true|false]" >&2
@@ -102,8 +102,8 @@ grep -q 'ksu_handle_sys_reboot' "$KSU_REPO/kernel/supercall/supercall.c" || {
 # Replace the upstream/Kowsu driver with the pinned KSU source.
 rm -rf "$KERNEL_DIR/KernelSU" "$KERNEL_DIR/drivers/kernelsu"
 cp -a "$KSU_REPO/kernel" "$KERNEL_DIR/drivers/kernelsu"
-# f6a1570c keeps the UAPI headers as a sibling of kernel/ and exposes
-# kernel/include/uapi as a relative symlink. Copy the real directory too;
+# The legacy KSU source keeps the UAPI headers as a sibling of kernel/ and
+# exposes kernel/include/uapi as a relative symlink. Copy the real directory too;
 # after relocating kernel/ into drivers/, that symlink would otherwise point
 # at a nonexistent drivers/uapi path.
 if [ -d "$KSU_REPO/uapi" ]; then
@@ -113,6 +113,13 @@ if [ -d "$KSU_REPO/uapi" ]; then
         rm -rf "$KERNEL_DIR/drivers/kernelsu/include/uapi"
         cp -a "$KSU_REPO/uapi" "$KERNEL_DIR/drivers/kernelsu/include/uapi"
     fi
+fi
+if [ -n "${KSU_EXPECTED_UAPI_VERSION:-}" ]; then
+    UAPI_FILE="$KERNEL_DIR/drivers/kernelsu/uapi/supercall.h"
+    grep -Eq "(#define KERNEL_SU_UAPI_VERSION[[:space:]]+${KSU_EXPECTED_UAPI_VERSION}|static const __u32 KERNEL_SU_UAPI_VERSION = ${KSU_EXPECTED_UAPI_VERSION})" "$UAPI_FILE" || {
+        echo "FATAL: KSU UAPI esperado ${KSU_EXPECTED_UAPI_VERSION} não encontrado em $UAPI_FILE" >&2
+        exit 1
+    }
 fi
 
 # E404 already has these entries, but keep the experimental script self-contained.

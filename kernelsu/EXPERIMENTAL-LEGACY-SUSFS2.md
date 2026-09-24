@@ -32,6 +32,17 @@ an ADB smoke test.
 - The manager is expected to be the matching KernelSU-Next v3.4.0 manager. Do
   not install that manager on the current functional v1.x kernel.
 
-The experimental workflow option is `legacy-susfs2-experimental`. It should
-first be dispatched with DroidSpaces disabled (or the `minimal` profile) so a
-failure is attributable to the root stack rather than MEMCG/NAT changes.
+The original experimental workflow option is `legacy-susfs2-experimental`
+(KSU UAPI 2, the build already validated on the device). The updated option
+`legacy-susfs2-uapi4-experimental` uses KSU commit `65571d43`, which is the
+legacy non-GKI UAPI synchronization to version 4, while retaining the same
+manual-hook and SUSFS v2.3 bridge. It is the candidate to pair with manager
+v3.4.0 without the "kernel update required" UAPI warning.
+
+The UAPI 4 workflow sets `KSU_VERSION_OVERRIDE=33197`, the count-derived
+version for the pinned source, and validates the actual UAPI header before
+building. It is not a blind version-number override.
+
+Both experimental options should first be dispatched with DroidSpaces disabled
+(or the `minimal` profile) so a failure is attributable to the root stack
+rather than MEMCG/NAT changes.
