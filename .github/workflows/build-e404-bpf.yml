@@ -97,7 +97,8 @@ jobs:
           echo "commit_msg=$COMMIT_MSG" >> "$GITHUB_OUTPUT"
           echo "commit_date=$COMMIT_DATE" >> "$GITHUB_OUTPUT"
 
-          LATEST_RELEASE_TAG=$(gh release list --json tagName --jq '.[].tagName' 2>/dev/null | grep "^e404-bpf-" | head -n 1 || echo "")
+          # Releases experimentais não podem suppressir o build agendado padrão.
+          LATEST_RELEASE_TAG=$(gh release list --json tagName --jq '.[].tagName' 2>/dev/null | grep "^e404-bpf-" | grep -v "ksunext-legacy-susfs2" | head -n 1 || echo "")
           echo "Última release E404 encontrada: $LATEST_RELEASE_TAG"
 
           IS_MANUAL="${{ github.event_name == 'workflow_dispatch' }}"
