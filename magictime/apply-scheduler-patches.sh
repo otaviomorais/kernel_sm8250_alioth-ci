@@ -38,6 +38,7 @@ patches=(
     "$SCRIPT_DIR/patches/0018-aosp16-sysctl-bridge.patch"
     "$SCRIPT_DIR/patches/0019-aosp16-irq-work-smp-bridge.patch"
     "$SCRIPT_DIR/patches/0020-aosp16-smp-topology-bridge.patch"
+    "$SCRIPT_DIR/patches/0021-aosp16-cpufreq-bridge.patch"
 )
 
 for patch in "${patches[@]}"; do

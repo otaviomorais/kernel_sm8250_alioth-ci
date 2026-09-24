@@ -1,0 +1,14 @@
+diff --git a/drivers/cpufreq/freq_table.c b/drivers/cpufreq/freq_table.c
+index f122289b62713c0383b9c21f51e55cea05046e52..3a8cc99e6815fa4c1597e9cd5f2367bcc1d40d6c 100644
+--- a/drivers/cpufreq/freq_table.c
++++ b/drivers/cpufreq/freq_table.c
+@@ -58,9 +58,6 @@ int cpufreq_frequency_table_cpuinfo(struct cpufreq_policy *policy,
+ 	policy->min = policy->cpuinfo.min_freq = min_freq;
+ 	policy->max = policy->cpuinfo.max_freq = max_freq;
+ 
+-	if (max_freq > cpuinfo_max_freq_cached)
+-		cpuinfo_max_freq_cached = max_freq;
+-
+ 	if (policy->min == ~0)
+ 		return -EINVAL;
+ 	else

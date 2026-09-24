@@ -85,5 +85,9 @@
 #   Removes the duplicate CSD lock bit and passes the AOSP16 sched_domain
 #   argument to topology capacity queries.
 #
+# 0021-aosp16-cpufreq-bridge.patch
+#   Removes the obsolete global cpufreq max-frequency cache; the port uses
+#   AOSP16's per-policy cpuinfo.max_freq value.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.
