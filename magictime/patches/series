@@ -29,5 +29,9 @@
 # 0006-aosp16-rbtree-erase-bridge.patch
 #   Accounts for AOSP16's void rb_erase_cached() return convention.
 #
+# 0007-aosp16-topology-irqwork-bridge.patch
+#   Maps the newer energy-model state query and hard irq_work initializer to
+#   their AOSP16 equivalents.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.

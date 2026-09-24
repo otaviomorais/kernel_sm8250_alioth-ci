@@ -1,0 +1,40 @@
+diff --git a/include/linux/irq_work.h b/include/linux/irq_work.h
+index 3b752e80c017d34d6037e4b1f4169fcafb89e47d..296fd3e677cbc64ecc3f0a041e1e12189932ff42 100644
+--- a/include/linux/irq_work.h
++++ b/include/linux/irq_work.h
+@@ -41,6 +41,13 @@ void init_irq_work(struct irq_work *work, void (*func)(struct irq_work *))
+ 		.func  = (_f)					\
+ }
+ 
++/* Compatibility initializer for the newer hard-IRQ irq_work helper. */
++#define IRQ_WORK_INIT_HARD(_f)					\
++	((struct irq_work) {					\
++		.flags = ATOMIC_INIT(IRQ_WORK_HARD_IRQ),		\
++		.func = (_f),					\
++	})
++
+ 
+ bool irq_work_queue(struct irq_work *work);
+ bool irq_work_queue_on(struct irq_work *work, int cpu);
+diff --git a/kernel/sched/topology.c b/kernel/sched/topology.c
+index 1a735ac8cc5ced3834884eb3a645a29bd213f6d7..3018028cc0e8a946a303ca498f16a80d43d6a466 100644
+--- a/kernel/sched/topology.c
++++ b/kernel/sched/topology.c
+@@ -268,7 +268,7 @@ static void perf_domain_debug(const struct cpumask *cpu_map,
+ 		printk(KERN_CONT " pd%d:{ cpus=%*pbl nr_pstate=%d }",
+ 				cpumask_first(perf_domain_span(pd)),
+ 				cpumask_pr_args(perf_domain_span(pd)),
+-				em_pd_nr_perf_states(pd->em_pd));
++				em_pd_nr_cap_states(pd->em_pd));
+ 		pd = pd->next;
+ 	}
+ 
+@@ -391,7 +391,7 @@ static bool build_perf_domains(const struct cpumask *cpu_map)
+ 		 * complexity check.
+ 		 */
+ 		nr_pd++;
+-		nr_ps += em_pd_nr_perf_states(pd->em_pd);
++		nr_ps += em_pd_nr_cap_states(pd->em_pd);
+ 	}
+ 
+ 	if (cpumask_weight(&min_cpu_mask))
