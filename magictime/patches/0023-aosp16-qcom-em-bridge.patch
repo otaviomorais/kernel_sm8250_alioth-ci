@@ -1,0 +1,13 @@
+diff --git a/drivers/cpufreq/qcom-cpufreq-hw.c b/drivers/cpufreq/qcom-cpufreq-hw.c
+index 9526291413083a35a67d94e43617ed13cc71deaa..1d93bec9c0676a8212b502ce5c0fcd507b7df153 100644
+--- a/drivers/cpufreq/qcom-cpufreq-hw.c
++++ b/drivers/cpufreq/qcom-cpufreq-hw.c
+@@ -359,7 +359,7 @@ static int qcom_cpufreq_hw_cpu_init(struct cpufreq_policy *policy)
+ 	policy->driver_data = c;
+ 	policy->dvfs_possible_from_any_cpu = true;
+ 
+-	em_dev_register_perf_domain(cpu_dev, ret, &em_cb, policy->cpus, true);
++	em_register_perf_domain(policy->cpus, ret, &em_cb);
+ 
+ 	if (c->dcvsh_irq > 0 && !c->is_irq_requested) {
+ 		snprintf(c->dcvsh_irq_name, sizeof(c->dcvsh_irq_name),

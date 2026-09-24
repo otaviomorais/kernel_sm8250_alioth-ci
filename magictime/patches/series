@@ -93,5 +93,9 @@
 #   Reuses the public AOSP16 governor-attribute helper instead of defining a
 #   duplicate local conversion helper.
 #
+# 0023-aosp16-qcom-em-bridge.patch
+#   Adapts the Qualcomm cpufreq driver to AOSP16's em_register_perf_domain()
+#   interface.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.
