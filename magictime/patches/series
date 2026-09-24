@@ -65,5 +65,9 @@
 #   Removes the newer cpu_load_update_nohz hooks; AOSP16 uses the existing
 #   calc_load_nohz start/stop accounting pair in the tick path.
 #
+# 0016-aosp16-rt-walt-sysfs-bridge.patch
+#   Restores cpupri's RT query for softirq deferral and removes the orphaned
+#   WALT sched_load_boost sysfs attribute.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.

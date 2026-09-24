@@ -1,0 +1,109 @@
+diff --git a/drivers/base/cpu.c b/drivers/base/cpu.c
+index b9b249843e076baf602bc0df63559762c84cd778..36cf3ea95de6bdf090eb38025f888a1385f5e2eb 100644
+--- a/drivers/base/cpu.c
++++ b/drivers/base/cpu.c
+@@ -211,59 +211,6 @@ static struct attribute_group cpu_isolated_attr_group = {
+ 
+ #endif
+ 
+-static ssize_t show_sched_load_boost(struct device *dev,
+-				struct device_attribute *attr, char *buf)
+-{
+-	ssize_t rc;
+-	unsigned int boost;
+-	struct cpu *cpu = container_of(dev, struct cpu, dev);
+-	int cpuid = cpu->dev.id;
+-
+-	boost = per_cpu(sched_load_boost, cpuid);
+-	rc = snprintf(buf, PAGE_SIZE-2, "%d\n", boost);
+-
+-	return rc;
+-}
+-
+-static ssize_t __ref store_sched_load_boost(struct device *dev,
+-				struct device_attribute *attr,
+-				const char *buf, size_t count)
+-{
+-	int err;
+-	int boost;
+-	struct cpu *cpu = container_of(dev, struct cpu, dev);
+-	int cpuid = cpu->dev.id;
+-
+-	err = kstrtoint(strstrip((char *)buf), 0, &boost);
+-	if (err)
+-		return err;
+-
+-	/*
+-	 * -100 is low enough to cancel out CPU's load and make it near zro.
+-	 * 1000 is close to the maximum value that cpu_util_freq_{walt,pelt}
+-	 * can take without overflow.
+-	 */
+-	if (boost < -100 || boost > 1000)
+-		return -EINVAL;
+-
+-	per_cpu(sched_load_boost, cpuid) = boost;
+-
+-	return count;
+-}
+-
+-static DEVICE_ATTR(sched_load_boost, 0644,
+-		   show_sched_load_boost,
+-		   store_sched_load_boost);
+-
+-static struct attribute *sched_cpu_attrs[] = {
+-	&dev_attr_sched_load_boost.attr,
+-	NULL
+-};
+-
+-static struct attribute_group sched_cpu_attr_group = {
+-	.attrs = sched_cpu_attrs,
+-};
+-
+ static const struct attribute_group *common_cpu_attr_groups[] = {
+ #ifdef CONFIG_KEXEC
+ 	&crash_note_cpu_attr_group,
+@@ -271,7 +218,6 @@ static const struct attribute_group *common_cpu_attr_groups[] = {
+ #ifdef CONFIG_HOTPLUG_CPU
+ 	&cpu_isolated_attr_group,
+ #endif
+-	&sched_cpu_attr_group,
+ 	NULL
+ };
+ 
+@@ -282,7 +228,6 @@ static const struct attribute_group *hotplugable_cpu_attr_groups[] = {
+ #ifdef CONFIG_HOTPLUG_CPU
+ 	&cpu_isolated_attr_group,
+ #endif
+-	&sched_cpu_attr_group,
+ 	NULL
+ };
+ 
+diff --git a/kernel/sched/cpupri.c b/kernel/sched/cpupri.c
+index f7c8f2c9920cf19cd2027d34e5f9ceddd7c2650d..4afa847cc406ec54a1c24e4d430d17466833256e 100644
+--- a/kernel/sched/cpupri.c
++++ b/kernel/sched/cpupri.c
+@@ -319,3 +319,14 @@ void cpupri_cleanup(struct cpupri *cp)
+ 	for (i = 0; i < CPUPRI_NR_PRIORITIES; i++)
+ 		free_cpumask_var(cp->pri_to_cpu[i].mask);
+ }
++
++/*
++ * cpupri_check_rt - check if CPU has a RT task
++ * should be called from rcu-sched read section.
++ */
++bool cpupri_check_rt(void)
++{
++	int cpu = raw_smp_processor_id();
++
++	return cpu_rq(cpu)->rd->cpupri.cpu_to_pri[cpu] > CPUPRI_NORMAL;
++}
+diff --git a/kernel/sched/cpupri.h b/kernel/sched/cpupri.h
+index d6cba0020064cc7a70a18d762adb3600dfed065f..aa15bb890d45f9af3077605e49f3f7be95a0b941 100644
+--- a/kernel/sched/cpupri.h
++++ b/kernel/sched/cpupri.h
+@@ -26,4 +26,5 @@ int  cpupri_find_fitness(struct cpupri *cp, struct task_struct *p,
+ void cpupri_set(struct cpupri *cp, int cpu, int pri);
+ int  cpupri_init(struct cpupri *cp);
+ void cpupri_cleanup(struct cpupri *cp);
++bool cpupri_check_rt(void);
+ #endif
