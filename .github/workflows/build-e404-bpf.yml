@@ -15,6 +15,14 @@ on:
         required: false
         type: boolean
         default: true
+      ksu_stack:
+        description: 'Stack KernelSU (legacy-v1; legacy-susfs2-experimental)'
+        required: true
+        type: choice
+        default: legacy-v1
+        options:
+          - legacy-v1
+          - legacy-susfs2-experimental
       force_build:
         description: 'Forçar compilação mesmo se não houver novos commits upstream'
         required: true
@@ -111,6 +119,36 @@ jobs:
             echo "should_build=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Selecionar stack KernelSU/SUSFS
+        id: ksu_stack
+        if: steps.check_upstream.outputs.should_build == 'true'
+        env:
+          REQUESTED_STACK: ${{ inputs.ksu_stack || 'legacy-v1' }}
+        run: |
+          set -euo pipefail
+          case "$REQUESTED_STACK" in
+            legacy-v1)
+              STACK_SLUG='legacy-v1'
+              STACK_SUFFIX=''
+              echo "slug=$STACK_SLUG" >> "$GITHUB_OUTPUT"
+              echo "suffix=$STACK_SUFFIX" >> "$GITHUB_OUTPUT"
+              echo "Stack padrão preservado: KernelSU-Next/SUSFS v1.5.5."
+              ;;
+            legacy-susfs2-experimental)
+              STACK_SLUG='ksunext-legacy-susfs2'
+              STACK_SUFFIX='-ksunext-legacy-susfs2'
+              echo "slug=$STACK_SLUG" >> "$GITHUB_OUTPUT"
+              echo "suffix=$STACK_SUFFIX" >> "$GITHUB_OUTPUT"
+              echo "Stack experimental selecionado: KSU legacy f6a1570c + SUSFS v2.3.0."
+              ;;
+            *)
+              echo "FATAL: stack KSU desconhecida: $REQUESTED_STACK" >&2
+              exit 1
+              ;;
+          esac
+          echo "KSU_STACK_SLUG=$STACK_SLUG" >> "$GITHUB_ENV"
+          echo "KSU_STACK_SUFFIX=$STACK_SUFFIX" >> "$GITHUB_ENV"
+
       - name: Configurar Swap de 10GB
         if: steps.check_upstream.outputs.should_build == 'true'
         uses: pierotofy/set-swap-space@master
@@ -177,13 +215,64 @@ jobs:
           path: kernel
           fetch-depth: 1
 
+      - name: Checkout KernelSU-Next legacy (experimental)
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false') && (inputs.ksu_stack == 'legacy-susfs2-experimental')
+        uses: actions/checkout@v4
+        with:
+          repository: KernelSU-Next/KernelSU-Next
+          ref: f6a1570cc7857141b8acef9b3073840f59539359
+          path: ksu-legacy
+          fetch-depth: 0
+
+      - name: Checkout SUSFS v2.3 (experimental)
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false') && (inputs.ksu_stack == 'legacy-susfs2-experimental')
+        env:
+          SUSFS_COMMIT: b1de873fff29c3e1eebe643d6cab94af91f07217
+        run: |
+          set -euo pipefail
+          git init susfs-v2
+          git -C susfs-v2 remote add origin https://gitlab.com/simonpunk/susfs4ksu.git
+          git -C susfs-v2 fetch --depth 1 origin "$SUSFS_COMMIT"
+          git -C susfs-v2 checkout --detach FETCH_HEAD
+          test "$(git -C susfs-v2 rev-parse HEAD)" = "$SUSFS_COMMIT"
+          grep -q '#define SUSFS_VERSION "v2.3.0"' susfs-v2/kernel_patches/include/linux/susfs.h
+
       - name: Integrar KernelSU + SUSFS (E404)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false')
+        env:
+          KSU_STACK: ${{ inputs.ksu_stack || 'legacy-v1' }}
+          ENABLE_SUSFS: ${{ github.event.inputs.enable_susfs }}
         run: |
-          set -e
-          ENABLE_SUSFS="${{ github.event.inputs.enable_susfs }}"
-          echo "Aplicando integração de KernelSU no E404 (SUSFS: ${ENABLE_SUSFS:-true})..."
-          bash kernelsu/apply_e404.sh kernel "${ENABLE_SUSFS:-true}" kernel/arch/arm64/configs/vendor/alioth_defconfig
+          set -euo pipefail
+          ENABLE_SUSFS="${ENABLE_SUSFS:-true}"
+          if [ "$KSU_STACK" = "legacy-susfs2-experimental" ]; then
+            echo "Aplicando port experimental KSU-Next legacy + SUSFS v2.3 no E404..."
+            bash kernelsu/apply_e404_legacy_susfs2.sh \
+              kernel \
+              kernel/arch/arm64/configs/vendor/alioth_defconfig \
+              ksu-legacy \
+              susfs-v2 \
+              "$ENABLE_SUSFS"
+          else
+            echo "Aplicando integração KernelSU no E404 (stack legado; SUSFS: $ENABLE_SUSFS)..."
+            bash kernelsu/apply_e404.sh kernel "$ENABLE_SUSFS" kernel/arch/arm64/configs/vendor/alioth_defconfig
+          fi
+
+      - name: Validar stack KSU/SUSFS experimental
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false') && (github.event.inputs.enable_susfs != 'false') && (inputs.ksu_stack == 'legacy-susfs2-experimental')
+        run: |
+          set -euo pipefail
+          F=kernel/arch/arm64/configs/vendor/alioth_defconfig
+          grep -q '^CONFIG_KSU=y' "$F"
+          grep -q '^CONFIG_KSU_MANUAL_HOOK=y' "$F"
+          ! grep -q '^CONFIG_KSU_KPROBES_HOOK=y' "$F"
+          ! grep -q '^CONFIG_KSU_SYSCALL_TABLE_HOOK=y' "$F"
+          grep -q '^CONFIG_KSU_SUSFS=y' "$F"
+          grep -q '#define SUSFS_VERSION "v2.3.0"' kernel/include/linux/susfs.h
+          grep -q 'ksu_handle_execveat' kernel/fs/exec.c
+          grep -q 'ksu_handle_sys_reboot' kernel/kernel/reboot.c
+          test -z "$(find kernel -type f -name '*.rej' -print -quit)"
+          echo 'Stack experimental validada antes da geração do .config.'
 
       - name: Selecionar perfil do Droidspaces
         id: droidspaces_profile
@@ -508,7 +597,7 @@ jobs:
           cp dist/dtbo.img "$AK3_DIR/dtbo.img"
           chmod 755 "$AK3_DIR/META-INF/com/google/android/update-binary"
 
-          ZIP_NAME="AnyKernel3-Alioth-E404-BPF-${SHORT_SHA}-${PROFILE_LABEL}.zip"
+          ZIP_NAME="AnyKernel3-Alioth-E404-BPF-${SHORT_SHA}-${PROFILE_LABEL}${KSU_STACK_SUFFIX:-}.zip"
           cd "$AK3_DIR"
           zip -r -X "../dist/$ZIP_NAME" .
           cd ..
@@ -563,7 +652,7 @@ jobs:
         if: steps.check_upstream.outputs.should_build == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: alioth-e404-bpf-${{ steps.check_upstream.outputs.short_sha }}-${{ steps.droidspaces_profile.outputs.label || 'off' }}
+          name: alioth-e404-bpf-${{ steps.check_upstream.outputs.short_sha }}-${{ steps.droidspaces_profile.outputs.label || 'off' }}${{ steps.ksu_stack.outputs.suffix }}
           path: dist/
           retention-days: 14
 
@@ -577,11 +666,14 @@ jobs:
           FULL_SHA="${{ steps.check_upstream.outputs.commit_sha }}"
           COMMIT_MSG="${{ steps.check_upstream.outputs.commit_msg }}"
           PROFILE_LABEL="${DROIDSPACES_PROFILE:-off}"
+          STACK_SUFFIX="${KSU_STACK_SUFFIX:-}"
           BUILD_DATE=$(date -u +'%Y-%m-%d')
-          TAG_NAME="e404-bpf-${BUILD_DATE}-${SHORT_SHA}-${PROFILE_LABEL}"
+          TAG_NAME="e404-bpf-${BUILD_DATE}-${SHORT_SHA}-${PROFILE_LABEL}${STACK_SUFFIX}"
 
           KSU_STATUS="Ativado (KernelSU-Next + SUSFS v1.5.5 completo: SUS Maps, Try Umount, Open Redirect, Auto Try Umount Bind, Hide Symbols, OverlayFS Auto Kstat)"
-          if [ "${{ github.event.inputs.enable_ksu }}" = "false" ]; then
+          if [ "${{ inputs.ksu_stack || 'legacy-v1' }}" = "legacy-susfs2-experimental" ] && [ "${{ github.event.inputs.enable_ksu }}" != "false" ]; then
+            KSU_STATUS="EXPERIMENTAL (KernelSU-Next legacy f6a1570c + SUSFS v2.3.0; hooks manuais; requer manager v3.4.0)"
+          elif [ "${{ github.event.inputs.enable_ksu }}" = "false" ]; then
             KSU_STATUS="Desativado"
           elif [ "${{ github.event.inputs.enable_susfs }}" = "false" ]; then
             KSU_STATUS="Ativado (KernelSU-Next sem SUSFS)"
@@ -625,6 +717,7 @@ jobs:
           - **Mensagem Upstream:** ${COMMIT_MSG}
           - **Branch Base:** \`staging-bpf\`
           - **Perfil Droidspaces:** \`${PROFILE_LABEL}\`
+          - **Stack KSU/SUSFS:** \`${KSU_STACK_SLUG:-legacy-v1}\`
           - **Toolchain:** ZyC-Clang 16 (ThinLTO + CFI + ccache + Cortex-A77 tune)
 
           ---
@@ -648,7 +741,7 @@ jobs:
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             echo "Release $TAG_NAME já existe. Atualizando notas e substituindo arquivos..."
             gh release edit "$TAG_NAME" \
-              --title "Alioth Kernel E404 BPF (${BUILD_DATE} - ${SHORT_SHA} - ${PROFILE_LABEL})" \
+              --title "Alioth Kernel E404 BPF (${BUILD_DATE} - ${SHORT_SHA} - ${PROFILE_LABEL}${STACK_SUFFIX})" \
               --notes-file release_notes.md
             gh release upload "$TAG_NAME" \
               dist/"$ZIP_NAME" \
@@ -662,6 +755,6 @@ jobs:
               dist/boot.img \
               dist/dtbo.img \
               dist/Image \
-              --title "Alioth Kernel E404 BPF (${BUILD_DATE} - ${SHORT_SHA} - ${PROFILE_LABEL})" \
+              --title "Alioth Kernel E404 BPF (${BUILD_DATE} - ${SHORT_SHA} - ${PROFILE_LABEL}${STACK_SUFFIX})" \
               --notes-file release_notes.md
           fi
