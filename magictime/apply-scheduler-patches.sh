@@ -32,6 +32,7 @@ patches=(
     "$SCRIPT_DIR/patches/0012-aosp16-cgroup-rbtree-proc-bridge.patch"
     "$SCRIPT_DIR/patches/0013-aosp16-rtree-prio-bridge.patch"
     "$SCRIPT_DIR/patches/0014-aosp16-rcu-vmalloc-bridge.patch"
+    "$SCRIPT_DIR/patches/0015-aosp16-nhz-load-bridge.patch"
 )
 
 for patch in "${patches[@]}"; do

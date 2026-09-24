@@ -61,5 +61,9 @@
 #   Renames the RCU expedited-quiescent bit and uses the matching vmalloc
 #   augmented-rbtree callback form.
 #
+# 0015-aosp16-nhz-load-bridge.patch
+#   Removes the newer cpu_load_update_nohz hooks; AOSP16 uses the existing
+#   calc_load_nohz start/stop accounting pair in the tick path.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.
