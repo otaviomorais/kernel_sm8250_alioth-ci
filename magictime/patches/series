@@ -77,5 +77,9 @@
 #   Removes orphaned scheduler sysctl entries whose AOSP16 variables were not
 #   present in the ported scheduler.
 #
+# 0019-aosp16-irq-work-smp-bridge.patch
+#   Shares IRQ-work flag definitions with AOSP16 smp_types.h to avoid duplicate
+#   enum declarations when both headers are included.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.
