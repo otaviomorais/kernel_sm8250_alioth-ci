@@ -1494,7 +1494,7 @@ diff --git a/include/linux/sched.h b/include/linux/sched.h
 index 16f8091a34c7..9b6028937ce9 100644
 --- a/include/linux/sched.h
 +++ b/include/linux/sched.h
-@@ -1425,14 +1425,26 @@ struct task_struct {
+@@ -1425,14 +1425,25 @@ struct task_struct {
  	ANDROID_KABI_RESERVE(3);
  	ANDROID_KABI_RESERVE(4);
  	ANDROID_KABI_RESERVE(5);
@@ -1506,7 +1506,6 @@ index 16f8091a34c7..9b6028937ce9 100644
  #else
 +#if defined(CONFIG_KSU_SUSFS)
 +	u64 susfs_task_state;
-+	u64 susfs_last_fake_mnt_id;
 +#endif
  	struct mutex			futex_exit_mutex;
  #endif
