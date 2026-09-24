@@ -49,5 +49,9 @@
 #   Restores the AOSP16 RCU-trace task bit and resched annotation hook used
 #   by the unchanged architecture and BPF code.
 #
+# 0012-aosp16-cgroup-rbtree-proc-bridge.patch
+#   Aligns cpuset attach, interval-tree callbacks and procfs with the AOSP16
+#   interfaces after removing the WALT/schedtune surface.
+#
 # The patches intentionally do not change the stable workflow or defconfig.
 # The experimental fragment is appended only by the manual workflow.
