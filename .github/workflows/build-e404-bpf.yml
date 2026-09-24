@@ -75,7 +75,10 @@ jobs:
         run: |
           set -e
           echo "Consultando último commit em $UPSTREAM_REPO ($UPSTREAM_BRANCH)..."
-          UPSTREAM_DATA=$(curl -fsSL "https://api.github.com/repos/$UPSTREAM_REPO/branches/$UPSTREAM_BRANCH")
+          UPSTREAM_DATA=$(curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$UPSTREAM_REPO/branches/$UPSTREAM_BRANCH")
           COMMIT_SHA=$(echo "$UPSTREAM_DATA" | jq -r '.commit.sha')
           COMMIT_MSG=$(echo "$UPSTREAM_DATA" | jq -r '.commit.commit.message' | head -n 1)
           COMMIT_DATE=$(echo "$UPSTREAM_DATA" | jq -r '.commit.commit.author.date')
