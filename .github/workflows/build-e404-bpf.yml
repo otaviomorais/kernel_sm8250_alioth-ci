@@ -140,6 +140,10 @@ jobs:
               echo "slug=$STACK_SLUG" >> "$GITHUB_OUTPUT"
               echo "suffix=$STACK_SUFFIX" >> "$GITHUB_OUTPUT"
               echo "Stack experimental selecionado: KSU legacy f6a1570c + SUSFS v2.3.0."
+              # The source is copied into the kernel tree, so preserve the
+              # reported KSU version explicitly for the v3.4.0 manager ABI.
+              echo "KSU_VERSION_OVERRIDE=33194" >> "$GITHUB_ENV"
+              echo "KSU_VERSION_TAG_OVERRIDE=v3.4.0-legacy-e404" >> "$GITHUB_ENV"
               ;;
             *)
               echo "FATAL: stack KSU desconhecida: $REQUESTED_STACK" >&2
