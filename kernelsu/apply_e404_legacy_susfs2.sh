@@ -102,6 +102,18 @@ grep -q 'ksu_handle_sys_reboot' "$KSU_REPO/kernel/supercall/supercall.c" || {
 # Replace the upstream/Kowsu driver with the pinned KSU source.
 rm -rf "$KERNEL_DIR/KernelSU" "$KERNEL_DIR/drivers/kernelsu"
 cp -a "$KSU_REPO/kernel" "$KERNEL_DIR/drivers/kernelsu"
+# f6a1570c keeps the UAPI headers as a sibling of kernel/ and exposes
+# kernel/include/uapi as a relative symlink. Copy the real directory too;
+# after relocating kernel/ into drivers/, that symlink would otherwise point
+# at a nonexistent drivers/uapi path.
+if [ -d "$KSU_REPO/uapi" ]; then
+    rm -rf "$KERNEL_DIR/drivers/kernelsu/uapi"
+    cp -a "$KSU_REPO/uapi" "$KERNEL_DIR/drivers/kernelsu/uapi"
+    if [ -L "$KERNEL_DIR/drivers/kernelsu/include/uapi" ] || [ -e "$KERNEL_DIR/drivers/kernelsu/include/uapi" ]; then
+        rm -rf "$KERNEL_DIR/drivers/kernelsu/include/uapi"
+        cp -a "$KSU_REPO/uapi" "$KERNEL_DIR/drivers/kernelsu/include/uapi"
+    fi
+fi
 
 # E404 already has these entries, but keep the experimental script self-contained.
 if ! grep -q 'source "drivers/kernelsu/Kconfig"' "$KERNEL_DIR/drivers/Kconfig"; then

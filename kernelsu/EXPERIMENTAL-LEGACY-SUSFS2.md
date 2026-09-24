@@ -16,6 +16,12 @@ an ADB smoke test.
   Kconfig layout.
 - `e404-ksu-legacy-manual-hooks.patch` supplies the small non-GKI syscall/manual
   hook set required by the f6a legacy source. It is not the old Kowsu patch.
+- The integration copies the KSU sibling `uapi/` directory as well as
+  `kernel/`; f6a1570c uses a relative `kernel/include/uapi` link that would
+  otherwise break after relocation into `drivers/kernelsu`.
+- The CI sets `KSU_VERSION_OVERRIDE=33194`, the version calculated from the
+  pinned f6a1570c source. This is above the v3.4.0 manager's minimum UAPI
+  kernel version (`33188`) while keeping the source commit itself pinned.
 
 ## Intentional differences from the functional build
 
