@@ -48,6 +48,49 @@ O workflow aplica G1, G2.1 e G2.2a somente quando `enable_folios_g22=true`;
 `enable_folios_g2=true` valida apenas G1+G2.1 e `enable_folios_g1=true`
 valida apenas G1.
 
+## G2.5c
+
+`e404-folio-g2.5c.patch` aplica, sobre o G2.5b, o patch upstream 87/90
+(`mm/filemap: Convert mapping_get_entry to return a folio`).
+
+O page cache só contém folios, então a entrada carregada do xarray **já é** a
+head, e a especulação pode ir direto nela em vez de numa head obtida com
+`compound_head()`.
+
+A segunda metade do patch decorre da primeira: como o objeto em que temos
+referência e o objeto que comparamos com `xas_reload()` passaram a ser o mesmo,
+a checagem separada de "a page foi dividida embaixo de nós" do E404 deixou de
+fazer falta. O upstream chega ao mesmo ponto pelo outro lado, apagando a
+equivalente dentro de `mapping_get_entry()`.
+
+### Os dois nomes convivem
+
+No upstream a função se chama `mapping_get_entry()` e devolve `void *`, para que
+o tipo diga ao caller se ele recebeu um folio ou uma entrada de shadow/swap. No
+E404 ela se chamava `find_get_entry()` e devolvia `struct page *`.
+
+Ambos existem aqui: `mapping_get_entry()` é a função estática convertida, e
+`find_get_entry()` vira um wrapper fino exportado que devolve a head page para
+os callers ainda não convertidos (dois em `mm/filemap.c`, um em
+`mm/memcontrol.c`). O upstream converte esses callers nos patches 88/90 e 89/90,
+depois dos quais o wrapper sai.
+
+O wrapper precisa tratar NULL e `xa_is_value()` antes de dereferenciar: uma
+entrada de shadow tem o bit baixo setado, e NULL não é folio, então um
+`page_folio()` puro não faria sentido em nenhum dos dois casos. E `page_folio()`
+é um macro `_Generic` cujos braços são `struct page *` e `const struct page *`,
+então o wrapper faz cast explícito antes de chamar: uma expressão `void *` não
+selecionaria nenhum braço e não compilaria.
+
+### A semântica da referência é a mesma
+
+`folio_try_get_rcu()` e `page_cache_get_speculative()` do E404 são a mesma
+operação aqui: sem `CONFIG_TINY_RCU` — este build tem `CONFIG_PREEMPT_RCU=y` e
+não tem TINY_RCU — a primeira é `folio_ref_add_unless(folio, 1, 0)` e a segunda é
+`get_page_unless_zero()`. A única coisa que se perde é o
+`VM_BUG_ON_PAGE(PageTail(page))` da versão de page, que um folio satisfaz por
+construção.
+
 ## G2.5b
 
 `e404-folio-g2.5b.patch` aplica, sobre o G2.5a, os patches upstream 83/90

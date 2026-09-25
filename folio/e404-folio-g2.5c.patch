@@ -1,0 +1,155 @@
+From: Codex folio backport <codex@local>
+Subject: [PATCH] E404 folio G2.5c: Convert mapping_get_entry to return a folio
+
+Upstream patch 87/90.  The page cache only ever holds folios, so the entry
+loaded from the xarray already is the head, and the speculation can go
+straight on it instead of on a head obtained with compound_head().
+
+The second half of the patch follows from the first: because the object
+we hold a reference on and the object we compare against xas_reload()
+are now the same one, E404's separate "the page was split under us"
+re-check is gone.  Upstream reaches the same place from the other
+direction, by deleting the equivalent check in mapping_get_entry().
+
+Divergences from upstream, all deliberate:
+
+  - E404 called this function find_get_entry() and returned struct page *.
+    Upstream calls it mapping_get_entry() and returns void *, so that one
+    type tells the caller whether it got a folio or a shadow/swap entry.
+    Both names are kept here: mapping_get_entry() is the converted static
+    function, and find_get_entry() becomes a thin exported wrapper that
+    hands back the head page for callers that have not been converted yet
+    (two in mm/filemap.c, one in mm/memcontrol.c).  Upstream converts
+    those callers in patches 88/90 and 89/90, after which the wrapper goes
+    away.
+
+  - The wrapper must not lose the shadow/swap case, so it checks both
+    NULL and xa_is_value() before dereferencing.  A shadow entry has its
+    low bit set, and a NULL entry is not a folio, so a bare
+    page_folio() would be nonsense for either.
+
+  - page_folio() is a _Generic macro whose two arms are struct page * and
+    const struct page *, so the wrapper casts explicitly before calling it.
+    A void * controlling expression would select no arm and fail to build.
+
+folio_try_get_rcu() and E404's page_cache_get_speculative() are the same
+operation here: with CONFIG_TINY_RCU unset (this build has
+CONFIG_PREEMPT_RCU=y and no TINY_RCU) the first is
+folio_ref_add_unless(folio, 1, 0) and the second is
+get_page_unless_zero().  The only thing dropped is page_cache_get_speculative()'s
+VM_BUG_ON_PAGE(PageTail(page)), which a folio satisfies by construction.
+
+diff --git a/mm/filemap.c b/mm/filemap.c
+index 43b3d5f..64259a1 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -1834,59 +1834,80 @@ pgoff_t page_cache_prev_miss(struct address_space *mapping,
+ EXPORT_SYMBOL(page_cache_prev_miss);
+ 
+ /**
+- * find_get_entry - find and get a page cache entry
++ * mapping_get_entry - Look up the page cache entry
+  * @mapping: the address_space to search
+- * @offset: the page cache index
++ * @index: The page cache index.
+  *
+- * Looks up the page cache slot at @mapping & @offset.  If there is a
+- * page cache page, it is returned with an increased refcount.
++ * Looks up the page cache entry at @mapping & @index.  If it is a folio,
++ * it is returned with an increased refcount.  If it is a shadow entry
++ * of a previously evicted folio, or a swap entry from shmem/tmpfs,
++ * it is returned without further action.
+  *
+- * If the slot holds a shadow entry of a previously evicted page, or a
+- * swap entry from shmem/tmpfs, it is returned.
++ * Return: The folio, swap or shadow entry, %NULL if nothing is found.
+  *
+- * Return: the found page or shadow entry, %NULL if nothing is found.
++ * Upstream patch 87/90.  E404 called this find_get_entry() and returned
++ * struct page *.  It speculated on the head page obtained with
++ * compound_head(), then re-checked that the page had not been split
++ * underneath.  The page cache only ever holds folios, so the entry loaded
++ * from the xarray already is the head: the speculation goes straight on it
++ * with folio_try_get_rcu(), and the object we hold a reference on and the
++ * object we compare against xas_reload() become the same one, which is what
++ * makes the separate split check unnecessary.
+  */
+-struct page *find_get_entry(struct address_space *mapping, pgoff_t offset)
++static void *mapping_get_entry(struct address_space *mapping, pgoff_t index)
+ {
+-	XA_STATE(xas, &mapping->i_pages, offset);
+-	struct page *head, *page;
++	XA_STATE(xas, &mapping->i_pages, index);
++	struct folio *folio;
+ 
+ 	rcu_read_lock();
+ repeat:
+ 	xas_reset(&xas);
+-	page = xas_load(&xas);
+-	if (xas_retry(&xas, page))
++	folio = xas_load(&xas);
++	if (xas_retry(&xas, folio))
+ 		goto repeat;
+ 	/*
+ 	 * A shadow entry of a recently evicted page, or a swap entry from
+ 	 * shmem/tmpfs.  Return it without attempting to raise page count.
+ 	 */
+-	if (!page || xa_is_value(page))
++	if (!folio || xa_is_value(folio))
+ 		goto out;
+ 
+-	head = compound_head(page);
+-	if (!page_cache_get_speculative(head))
++	if (!folio_try_get_rcu(folio))
+ 		goto repeat;
+ 
+-	/* The page was split under us? */
+-	if (compound_head(page) != head) {
+-		put_page(head);
+-		goto repeat;
+-	}
+-
+-	/*
+-	 * Has the page moved?
+-	 * This is part of the lockless pagecache protocol. See
+-	 * include/linux/pagemap.h for details.
+-	 */
+-	if (unlikely(page != xas_reload(&xas))) {
+-		put_page(head);
++	if (unlikely(folio != xas_reload(&xas))) {
++		folio_put(folio);
+ 		goto repeat;
+ 	}
+ out:
+ 	rcu_read_unlock();
+ 
+-	return page;
++	return folio;
++}
++
++/**
++ * find_get_entry - find and get a page cache entry
++ * @mapping: the address_space to search
++ * @offset: the page cache index
++ *
++ * Compatibility wrapper for callers that have not been converted to folios;
++ * upstream converts them in patches 88/90 and 89/90.  The page cache only
++ * holds folios, so the head page is what the entry would have been anyway.
++ *
++ * If the slot holds a shadow entry of a previously evicted page, or a
++ * swap entry from shmem/tmpfs, it is returned unchanged and the caller must
++ * use xa_is_value() to tell.
++ *
++ * Return: the found page or shadow entry, %NULL if nothing is found.
++ */
++struct page *find_get_entry(struct address_space *mapping, pgoff_t offset)
++{
++	void *entry = mapping_get_entry(mapping, offset);
++
++	if (!entry || xa_is_value(entry))
++		return (struct page *)entry;
++
++	return &page_folio((struct page *)entry)->page;
+ }
+ EXPORT_SYMBOL(find_get_entry);
+ 

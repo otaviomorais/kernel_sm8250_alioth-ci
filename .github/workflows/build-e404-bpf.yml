@@ -108,6 +108,11 @@ on:
         required: false
         type: boolean
         default: false
+      enable_folios_g25c:
+        description: 'Integrar o G2.5c de folios (mapping_get_entry devolve folio, patch 87/90; opt-in)'
+        required: false
+        type: boolean
+        default: false
       droidspaces_profile:
         description: 'Perfil DroidSpaces (full recomendado; minimal; perfis cumulativos históricos)'
         required: true
@@ -420,6 +425,14 @@ jobs:
           echo "Aplicando o G2.5b de folios (patches 83/90 e 86/90, insercao no page cache por folio)..."
           bash folio/apply-g25b.sh kernel
           echo "FOLIO_SUFFIX=-folio-g25b" >> "$GITHUB_ENV"
+
+      - name: Integrar folio G2.5c (mapping_get_entry por folio, opt-in)
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25c == 'true')
+        run: |
+          set -euo pipefail
+          echo "Aplicando o G2.5c de folios (patch 87/90, mapping_get_entry devolve folio)..."
+          bash folio/apply-g25c.sh kernel
+          echo "FOLIO_SUFFIX=-folio-g25c" >> "$GITHUB_ENV"
 
       - name: Checkout KernelSU-Next legacy (UAPI 2)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false') && (inputs.ksu_stack == 'legacy-susfs2-experimental')
@@ -971,6 +984,15 @@ jobs:
           test -z "$(find kernel -type f -name '*.rej' -print -quit)"
           echo 'Folio G2.5b validado; filemap_add_folio() e folio_add_lru() presentes, callers de page intactos.'
 
+      - name: Validar folio G2.5c no kernel
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25c == 'true')
+        run: |
+          set -euo pipefail
+          bash folio/verify-g25c.sh kernel
+
+          test -z "$(find kernel -type f -name '*.rej' -print -quit)"
+          echo 'Folio G2.5c validado; mapping_get_entry() devolve folio, find_get_entry() como wrapper.'
+
       - name: Compilar Kernel (Image, dtbs, dtbo.img)
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |
@@ -1120,7 +1142,9 @@ jobs:
           else
             MGLRU_STATUS="Desativado (baseline preservado)"
           fi
-          if [ "$FOLIO_SUFFIX" = "-folio-g25b" ]; then
+          if [ "$FOLIO_SUFFIX" = "-folio-g25c" ]; then
+            FOLIO_STATUS="G2.5c ativado (patch 87/90: mapping_get_entry devolve folio; find_get_entry preservado como wrapper para os 3 callers nao convertidos)"
+          elif [ "$FOLIO_SUFFIX" = "-folio-g25b" ]; then
             FOLIO_STATUS="G2.5b ativado (patches 83/90 e 86/90: __filemap_add_folio, filemap_add_folio, folio_add_lru; charge de memcg em tres fases do E404; wrappers de page preservados)"
           elif [ "$FOLIO_SUFFIX" = "-folio-g25a" ]; then
             FOLIO_STATUS="G2.5a ativado (patches 84/90 e 85/90: __folio_alloc, folio_alloc, filemap_alloc_folio; __page_cache_alloc virou wrapper inline)"
