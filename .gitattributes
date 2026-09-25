@@ -1,0 +1,4 @@
+# Os patches de folio e os scripts que os aplicam precisam de LF puro.
+# Um CRLF num .patch quebra o git apply, e num .sh quebra o shebang.
+folio/*.patch text eol=lf
+folio/*.sh    text eol=lf
