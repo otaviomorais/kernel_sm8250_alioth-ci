@@ -1,0 +1,88 @@
+diff --git a/mm/filemap.c b/mm/filemap.c
+index c251cba..18cb67f 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -1099,6 +1099,65 @@ static void wake_up_page_bit(struct page *page, int bit_nr)
+ 	spin_unlock_irqrestore(&q->lock, flags);
+ }
+ 
++/*
++ * Folio counterpart of wake_up_page_bit() above.  The waitqueue key still
++ * holds a struct page, because struct wait_page_key has not been converted
++ * yet; that conversion is upstream patch 29/90.
++ */
++static void folio_wake_bit(struct folio *folio, int bit_nr)
++{
++	wait_queue_head_t *q = page_waitqueue(&folio->page);
++	struct wait_page_key key;
++	unsigned long flags;
++	wait_queue_entry_t bookmark;
++
++	key.page = &folio->page;
++	key.bit_nr = bit_nr;
++	key.page_match = 0;
++
++	bookmark.flags = 0;
++	bookmark.private = NULL;
++	bookmark.func = NULL;
++	INIT_LIST_HEAD(&bookmark.entry);
++
++	spin_lock_irqsave(&q->lock, flags);
++	__wake_up_locked_key_bookmark(q, TASK_NORMAL, &key, &bookmark);
++
++	while (bookmark.flags & WQ_FLAG_BOOKMARK) {
++		/*
++		 * Take a breather from holding the lock,
++		 * allow pages that finish wake up asynchronously
++		 * to acquire the lock and remove themselves
++		 * from wait queue
++		 */
++		spin_unlock_irqrestore(&q->lock, flags);
++		cpu_relax();
++		spin_lock_irqsave(&q->lock, flags);
++		__wake_up_locked_key_bookmark(q, TASK_NORMAL, &key, &bookmark);
++	}
++
++	/*
++	 * It is possible for other pages to have collided on the waitqueue
++	 * hash, so in that case check for a page match. That prevents a long-
++	 * term waiter
++	 *
++	 * It is still possible to miss a case here, when we woke page waiters
++	 * and removed them from the waitqueue, but there are still other
++	 * page waiters.
++	 */
++	if (!waitqueue_active(q) || !key.page_match) {
++		folio_clear_waiters(folio);
++		/*
++		 * It's possible to miss clearing Waiters here, when we woke
++		 * our page waiters, but the hashed waitqueue has waiters for
++		 * other pages on it.
++		 *
++		 * That's okay, it's a rare case. The next waker will clear it.
++		 */
++	}
++	spin_unlock_irqrestore(&q->lock, flags);
++}
++
+ static void wake_up_page(struct page *page, int bit)
+ {
+ 	if (!PageWaiters(page))
+@@ -1110,7 +1169,7 @@ static void folio_wake(struct folio *folio, int bit)
+ {
+ 	if (!folio_test_waiters(folio))
+ 		return;
+-	wake_up_page_bit(&folio->page, bit);
++	folio_wake_bit(folio, bit);
+ }
+ 
+ /*
+@@ -1446,7 +1505,7 @@ void folio_unlock(struct folio *folio)
+ 	BUILD_BUG_ON(PG_locked > 7);
+ 	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
+ 	if (clear_bit_unlock_is_negative_byte(PG_locked, folio_flags(folio, 0)))
+-		wake_up_page_bit(&folio->page, PG_locked);
++		folio_wake_bit(folio, PG_locked);
+ }
+ EXPORT_SYMBOL(folio_unlock);
+ 

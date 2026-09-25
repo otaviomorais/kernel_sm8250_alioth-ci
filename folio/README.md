@@ -48,6 +48,31 @@ O workflow aplica G1, G2.1 e G2.2a somente quando `enable_folios_g22=true`;
 `enable_folios_g2=true` valida apenas G1+G2.1 e `enable_folios_g1=true`
 valida apenas G1.
 
+## G2.3e
+
+`e404-folio-g2.3e.patch` adiciona, sobre o G2.3d, o patch upstream 28/90:
+
+- `folio_wake_bit()` (static) em `mm/filemap.c`.
+
+`folio_wake()` e `folio_unlock()` (adicionados em G2.3b/G2.3c) passam a usar
+`folio_wake_bit()`, como o upstream faz neste patch. Ambas ainda nao tem
+callers, logo isso nao muda comportamento.
+
+A chave de waitqueue (`struct wait_page_key`) continua com `struct page`;
+isso e convertido pelo patch upstream 29/90.
+
+### Patch upstream 30/90 omitido
+
+O patch 30/90 converte `end_page_private_2()`, `wait_on_page_private_2()`,
+`wait_on_page_private_2_killable()` e `include/linux/netfs.h`. Verifiquei a
+arvore do E404: **nao existe** `include/linux/netfs.h`, nem `end_page_private_2()`,
+nem `wait_on_page_private_2()` / `wait_on_page_private_2_killable()` em
+`mm/filemap.c`. Nao ha maquinaria de pagina para derivar as variantes de folio.
+Escrever essas funcoes seria codigo novo, nao um port, entao elas ficam de
+fora. O bit `PG_private_2` continua acessivel pelos wrappers de folio do
+G2.2a (`folio_test_private_2()`, `folio_set_private_2()`,
+`folio_clear_private_2()`).
+
 ## G2.3d
 
 `e404-folio-g2.3d.patch` adiciona, sobre o G2.3c, o patch upstream 27/90:
