@@ -130,25 +130,35 @@ index a1e8a0b..b7a9d4e 100644
  #define PAGE_FRAG_CACHE_MAX_ORDER	get_order(PAGE_FRAG_CACHE_MAX_SIZE)
  
 diff --git a/include/linux/page-flags.h b/include/linux/page-flags.h
-index 260c442..074f96d 100644
+index 260c442..9242a45 100644
 --- a/include/linux/page-flags.h
 +++ b/include/linux/page-flags.h
-@@ -137,6 +137,7 @@ enum pageflags {
+@@ -137,16 +137,29 @@ enum pageflags {
  #ifndef __GENERATING_BOUNDS_H
  
  struct page;	/* forward declaration */
 +struct folio;	/* forward declaration */
  
- static inline struct page *compound_head(struct page *page)
+-static inline struct page *compound_head(struct page *page)
++static inline const struct page *_compound_head(const struct page *page)
  {
-@@ -147,6 +148,13 @@ static inline struct page *compound_head(struct page *page)
+ 	unsigned long head = READ_ONCE(page->compound_head);
+ 
+ 	if (unlikely(head & 1))
+-		return (struct page *) (head - 1);
++		return (const struct page *)(head - 1);
  	return page;
  }
  
++static inline struct page *compound_head(struct page *page)
++{
++	return (struct page *)_compound_head(page);
++}
++
 +#define page_folio(p) \
 +	(_Generic((p), \
-+		const struct page *: (const struct folio *)compound_head(p), \
-+		struct page *: (struct folio *)compound_head(p)))
++		const struct page *: (const struct folio *)_compound_head(p), \
++		struct page *: (struct folio *)_compound_head(p)))
 +
 +#define folio_page(folio, n) nth_page(&(folio)->page, n)
 +
