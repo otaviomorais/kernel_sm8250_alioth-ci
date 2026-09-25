@@ -1437,7 +1437,7 @@ index 289fa8c..f7b67b0 100644
  	unsigned int noreclaim_flag;
  	unsigned long pflags;
 diff --git a/mm/pagewalk.c b/mm/pagewalk.c
-index 8a15815..e2100f8 100644
+index 8a15815..c2ba8cd 100644
 --- a/mm/pagewalk.c
 +++ b/mm/pagewalk.c
 @@ -135,8 +135,11 @@ static int walk_p4d_range(pgd_t *pgd, unsigned long addr, unsigned long end,
@@ -1453,6 +1453,15 @@ index 8a15815..e2100f8 100644
  		if (err)
  			break;
  	} while (p4d++, addr = next, addr != end);
+@@ -162,7 +165,7 @@ static int walk_pgd_range(unsigned long addr, unsigned long end,
+ 				break;
+ 			continue;
+ 		}
+-		if (ops->pmd_entry || ops->pte_entry)
++		if (walk->p4d_entry || ops->pmd_entry || ops->pte_entry)
+ 			err = walk_p4d_range(pgd, addr, next, walk);
+ 		if (err)
+ 			break;
 @@ -228,6 +231,11 @@ static int walk_page_test(unsigned long start, unsigned long end,
  	struct vm_area_struct *vma = walk->vma;
  	const struct mm_walk_ops *ops = walk->ops;
