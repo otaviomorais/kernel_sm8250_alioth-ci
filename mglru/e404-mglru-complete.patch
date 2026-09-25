@@ -1437,7 +1437,7 @@ index 289fa8c..f7b67b0 100644
  	unsigned int noreclaim_flag;
  	unsigned long pflags;
 diff --git a/mm/pagewalk.c b/mm/pagewalk.c
-index 8a15815..c2ba8cd 100644
+index 8a15815..5979b30 100644
 --- a/mm/pagewalk.c
 +++ b/mm/pagewalk.c
 @@ -135,8 +135,11 @@ static int walk_p4d_range(pgd_t *pgd, unsigned long addr, unsigned long end,
@@ -1447,7 +1447,7 @@ index 8a15815..c2ba8cd 100644
 -		if (ops->pmd_entry || ops->pte_entry)
 +		if (walk->p4d_entry) {
 +			err = walk->p4d_entry(p4d, addr, next, walk);
-+		} else if (ops->pmd_entry || ops->pte_entry) {
++		} else if (ops->pud_entry || ops->pmd_entry || ops->pte_entry) {
  			err = walk_pud_range(p4d, addr, next, walk);
 +		}
  		if (err)
@@ -1458,7 +1458,7 @@ index 8a15815..c2ba8cd 100644
  			continue;
  		}
 -		if (ops->pmd_entry || ops->pte_entry)
-+		if (walk->p4d_entry || ops->pmd_entry || ops->pte_entry)
++		if (walk->p4d_entry || ops->pud_entry || ops->pmd_entry || ops->pte_entry)
  			err = walk_p4d_range(pgd, addr, next, walk);
  		if (err)
  			break;
@@ -1558,7 +1558,7 @@ index 89ab658..a0ca26f 100644
  						pvmw.pte)) {
  				/*
 diff --git a/mm/swap.c b/mm/swap.c
-index 575b462..6b61bfd 100644
+index 575b462..8de0336 100644
 --- a/mm/swap.c
 +++ b/mm/swap.c
 @@ -360,6 +360,43 @@ static void __lru_cache_activate_page(struct page *page)
@@ -1644,6 +1644,30 @@ index 575b462..6b61bfd 100644
  		/*
  		 * We use the irq-unsafe __mod_zone_page_stat because this
  		 * counter is not modified from interrupt context, and the pte
+@@ -516,7 +565,6 @@ static void lru_deactivate_file_fn(struct page *page, struct lruvec *lruvec,
+ 	del_page_from_lru_list(page, lruvec, lru + active);
+ 	ClearPageActive(page);
+ 	ClearPageReferenced(page);
+-	add_page_to_lru_list(page, lruvec, lru);
+ 
+ 	if (PageWriteback(page) || PageDirty(page)) {
+ 		/*
+@@ -524,13 +572,14 @@ static void lru_deactivate_file_fn(struct page *page, struct lruvec *lruvec,
+ 		 * It can make readahead confusing.  But race window
+ 		 * is _really_ small and  it's non-critical problem.
+ 		 */
++		add_page_to_lru_list(page, lruvec, lru);
+ 		SetPageReclaim(page);
+ 	} else {
+ 		/*
+ 		 * The page's writeback ends up during pagevec
+ 		 * We moves tha page into tail of inactive.
+ 		 */
+-		list_move_tail(&page->lru, &lruvec->lists[lru]);
++		add_page_to_lru_list_tail(page, lruvec, lru);
+ 		__count_vm_event(PGROTATED);
+ 	}
+ 
 diff --git a/mm/swap_state.c b/mm/swap_state.c
 index 8f9ef42..20c7e7b 100644
 --- a/mm/swap_state.c
@@ -1794,7 +1818,7 @@ index 813c846..bfd0f9a 100644
  		down_read(&mm->mmap_sem);
  		lock_page(page);
 diff --git a/mm/vmscan.c b/mm/vmscan.c
-index be15e56..da8faa8 100644
+index be15e56..9a2a7f6 100644
 --- a/mm/vmscan.c
 +++ b/mm/vmscan.c
 @@ -15,6 +15,7 @@
@@ -1855,7 +1879,7 @@ index be15e56..da8faa8 100644
  	if (PageSwapCache(page)) {
  		swp_entry_t swap = { .val = page_private(page) };
 +
-+		if (lru_gen_enabled())
++		if (reclaimed && lru_gen_enabled())
 +			shadow = lru_gen_eviction(page);
  		mem_cgroup_swapout(page, swap);
 -		__delete_from_swap_cache(page, swap);
