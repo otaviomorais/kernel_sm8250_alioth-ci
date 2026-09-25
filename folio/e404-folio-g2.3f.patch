@@ -1,0 +1,330 @@
+From: Codex folio backport <codex@local>
+Subject: [PATCH] E404 folio G2.3f: Convert page wait queues to be folios
+
+Backport of upstream folio-5.16 patch 29/90 (mm/filemap: Convert page wait
+queues to be folios) onto E404 4.19.404R with MGLRU, UAPI2/SUSFS and
+DroidSpaces already in place.
+
+struct wait_page_key and struct wait_page_queue now carry a struct folio
+instead of a struct page, page_waitqueue() becomes folio_waitqueue(), and
+add_page_wait_queue() keeps working as a thin wrapper over the new
+folio_add_wait_queue() so fs/cachefiles/rdwr.c continues to build.
+
+Divergences from upstream, all deliberate:
+
+  - fs/cachefiles/rdwr.c is not converted.  Upstream rewrites it to read
+    key->folio, but the E404 copy uses the generic wait_bit API and keys off
+    key->flags plus wait->private; struct wait_bit_key has a different layout
+    in 4.19 than the stale comment in mm/filemap.c claimed.  Preserving
+    add_page_wait_queue() is what keeps that file correct unmodified.
+
+  - wake_up_page_bit(), wake_up_page() and wait_on_page_bit_common() still
+    exist here (upstream had already folded them into the folio path by patch
+    29), so they are converted by hand.  Both the waking and the waiting side
+    resolve page_folio(page) together, which keeps waiter and waker agreeing
+    on the bucket, the key and the PG_waiters word.  The bit actually waited
+    on, and the put_page() on the DROP path, stay page-level on purpose: the
+    caller asked about a specific page and owns that reference.
+
+  - The bucket index is unchanged.  hash_ptr() works on the pointer value and
+    page_folio() returns the head address, which is the address the old code
+    hashed for every order-0 page -- all of them in this configuration, as
+    CONFIG_TRANSPARENT_HUGEPAGE is not set.
+
+  - The __folio_lock_async() hunk is dropped: E404 has no
+    __folio_lock_async() or lock_page_async().
+
+diff --git a/include/linux/pagemap.h b/include/linux/pagemap.h
+index 2b86b1f..a30e4bb 100644
+--- a/include/linux/pagemap.h
++++ b/include/linux/pagemap.h
+@@ -771,8 +771,17 @@ void wait_for_stable_page(struct page *page);
+ 
+ void page_endio(struct page *page, bool is_write, int err);
+ 
++/*
++ * Add an arbitrary waiter to a folio's wait queue
++ */
++void folio_add_wait_queue(struct folio *folio, wait_queue_entry_t *waiter);
++
+ /*
+  * Add an arbitrary waiter to a page's wait queue
++ *
++ * Page-level wrapper around folio_add_wait_queue(), retained for callers that
++ * still hold a struct page -- fs/cachefiles/rdwr.c is the only one in this
++ * tree.  Upstream patch 29/90 replaced it outright.
+  */
+ extern void add_page_wait_queue(struct page *page, wait_queue_entry_t *waiter);
+ 
+diff --git a/mm/filemap.c b/mm/filemap.c
+index 18cb67f..fcbe142 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -988,11 +988,17 @@ EXPORT_SYMBOL(__page_cache_alloc);
+  */
+ #define PAGE_WAIT_TABLE_BITS 8
+ #define PAGE_WAIT_TABLE_SIZE (1 << PAGE_WAIT_TABLE_BITS)
+-static wait_queue_head_t page_wait_table[PAGE_WAIT_TABLE_SIZE] __cacheline_aligned;
++static wait_queue_head_t folio_wait_table[PAGE_WAIT_TABLE_SIZE] __cacheline_aligned;
+ 
+-static wait_queue_head_t *page_waitqueue(struct page *page)
++/*
++ * Upstream patch 29/90 renamed page_waitqueue() to folio_waitqueue() and made
++ * it take a struct folio.  The bucket is unchanged: hash_ptr() operates on the
++ * pointer value, and page_folio(page) yields the head page address, which is
++ * exactly what the page-based version hashed for an order-0 page.
++ */
++static wait_queue_head_t *folio_waitqueue(struct folio *folio)
+ {
+-	return &page_wait_table[hash_ptr(page, PAGE_WAIT_TABLE_BITS)];
++	return &folio_wait_table[hash_ptr(folio, PAGE_WAIT_TABLE_BITS)];
+ }
+ 
+ void __init pagecache_init(void)
+@@ -1000,20 +1006,31 @@ void __init pagecache_init(void)
+ 	int i;
+ 
+ 	for (i = 0; i < PAGE_WAIT_TABLE_SIZE; i++)
+-		init_waitqueue_head(&page_wait_table[i]);
++		init_waitqueue_head(&folio_wait_table[i]);
+ 
+ 	page_writeback_init();
+ }
+ 
+-/* This has the same layout as wait_bit_key - see fs/cachefiles/rdwr.c */
++/*
++ * Upstream patch 29/90 converted the page pointers in these two structures to
++ * folios.
++ *
++ * The "same layout as wait_bit_key" comment that used to sit here is stale in
++ * 4.19.  The generic wait_bit API was reworked after 4.19, so struct
++ * wait_bit_key is now {void *flags; int bit_nr; unsigned long timeout} rather
++ * than a page pointer.  fs/cachefiles/rdwr.c therefore keys off key->flags
++ * plus wait->private and never reads a page pointer out of the key, which is
++ * why it keeps building against the add_page_wait_queue() wrapper retained
++ * below instead of needing the folio rewrite upstream applied to it.
++ */
+ struct wait_page_key {
+-	struct page *page;
++	struct folio *folio;
+ 	int bit_nr;
+ 	int page_match;
+ };
+ 
+ struct wait_page_queue {
+-	struct page *page;
++	struct folio *folio;
+ 	int bit_nr;
+ 	wait_queue_entry_t wait;
+ };
+@@ -1024,7 +1041,7 @@ static int wake_page_function(wait_queue_entry_t *wait, unsigned mode, int sync,
+ 	struct wait_page_queue *wait_page
+ 		= container_of(wait, struct wait_page_queue, wait);
+ 
+-	if (wait_page->page != key->page)
++	if (wait_page->folio != key->folio)
+ 	       return 0;
+ 	key->page_match = 1;
+ 
+@@ -1039,7 +1056,7 @@ static int wake_page_function(wait_queue_entry_t *wait, unsigned mode, int sync,
+ 	 * a reference to the *same usage* of this page; so there is no need
+ 	 * to walk on to wake even the put_and_wait_on_page_locked() callers.
+ 	 */
+-	if (test_bit(key->bit_nr, &key->page->flags))
++	if (test_bit(key->bit_nr, &key->folio->flags))
+ 		return -1;
+ 
+ 	return autoremove_wake_function(wait, mode, sync, key);
+@@ -1047,12 +1064,13 @@ static int wake_page_function(wait_queue_entry_t *wait, unsigned mode, int sync,
+ 
+ static void wake_up_page_bit(struct page *page, int bit_nr)
+ {
+-	wait_queue_head_t *q = page_waitqueue(page);
++	struct folio *folio = page_folio(page);
++	wait_queue_head_t *q = folio_waitqueue(folio);
+ 	struct wait_page_key key;
+ 	unsigned long flags;
+ 	wait_queue_entry_t bookmark;
+ 
+-	key.page = page;
++	key.folio = folio;
+ 	key.bit_nr = bit_nr;
+ 	key.page_match = 0;
+ 
+@@ -1087,7 +1105,7 @@ static void wake_up_page_bit(struct page *page, int bit_nr)
+ 	 * page waiters.
+ 	 */
+ 	if (!waitqueue_active(q) || !key.page_match) {
+-		ClearPageWaiters(page);
++		folio_clear_waiters(folio);
+ 		/*
+ 		 * It's possible to miss clearing Waiters here, when we woke
+ 		 * our page waiters, but the hashed waitqueue has waiters for
+@@ -1100,18 +1118,19 @@ static void wake_up_page_bit(struct page *page, int bit_nr)
+ }
+ 
+ /*
+- * Folio counterpart of wake_up_page_bit() above.  The waitqueue key still
+- * holds a struct page, because struct wait_page_key has not been converted
+- * yet; that conversion is upstream patch 29/90.
++ * Folio counterpart of wake_up_page_bit() above.  Introduced by folio G2.3e
++ * with a page-shaped key, because struct wait_page_key had not been converted
++ * yet; folio G2.3f (upstream patch 29/90) does that conversion, so the key is
++ * now a struct folio for both wake paths.
+  */
+ static void folio_wake_bit(struct folio *folio, int bit_nr)
+ {
+-	wait_queue_head_t *q = page_waitqueue(&folio->page);
++	wait_queue_head_t *q = folio_waitqueue(folio);
+ 	struct wait_page_key key;
+ 	unsigned long flags;
+ 	wait_queue_entry_t bookmark;
+ 
+-	key.page = &folio->page;
++	key.folio = folio;
+ 	key.bit_nr = bit_nr;
+ 	key.page_match = 0;
+ 
+@@ -1160,7 +1179,7 @@ static void folio_wake_bit(struct folio *folio, int bit_nr)
+ 
+ static void wake_up_page(struct page *page, int bit)
+ {
+-	if (!PageWaiters(page))
++	if (!folio_test_waiters(page_folio(page)))
+ 		return;
+ 	wake_up_page_bit(page, bit);
+ }
+@@ -1192,6 +1211,7 @@ static inline __sched int wait_on_page_bit_common(wait_queue_head_t *q,
+ {
+ 	struct wait_page_queue wait_page;
+ 	wait_queue_entry_t *wait = &wait_page.wait;
++	struct folio *folio = page_folio(page);
+ 	bool bit_is_set;
+ 	bool thrashing = false;
+ 	bool delayacct = false;
+@@ -1211,7 +1231,7 @@ static inline __sched int wait_on_page_bit_common(wait_queue_head_t *q,
+ 	init_wait(wait);
+ 	wait->flags = behavior == EXCLUSIVE ? WQ_FLAG_EXCLUSIVE : 0;
+ 	wait->func = wake_page_function;
+-	wait_page.page = page;
++	wait_page.folio = folio;
+ 	wait_page.bit_nr = bit_nr;
+ 
+ 	for (;;) {
+@@ -1219,7 +1239,7 @@ static inline __sched int wait_on_page_bit_common(wait_queue_head_t *q,
+ 
+ 		if (likely(list_empty(&wait->entry))) {
+ 			__add_wait_queue_entry_tail(q, wait);
+-			SetPageWaiters(page);
++			folio_set_waiters(folio);
+ 		}
+ 
+ 		set_current_state(state);
+@@ -1279,7 +1299,7 @@ static inline __sched int wait_on_page_bit_common(wait_queue_head_t *q,
+ 
+ void __sched wait_on_page_bit(struct page *page, int bit_nr)
+ {
+-	wait_queue_head_t *q = page_waitqueue(page);
++	wait_queue_head_t *q = folio_waitqueue(page_folio(page));
+ 	wait_on_page_bit_common(q, page, bit_nr, TASK_UNINTERRUPTIBLE, SHARED);
+ }
+ EXPORT_SYMBOL(wait_on_page_bit);
+@@ -1296,7 +1316,7 @@ EXPORT_SYMBOL(wait_on_page_bit);
+ static inline __sched int folio_wait_bit_common(struct folio *folio, int bit_nr,
+ 		int state, enum behavior behavior)
+ {
+-	wait_queue_head_t *q = page_waitqueue(&folio->page);
++	wait_queue_head_t *q = folio_waitqueue(folio);
+ 	struct wait_page_queue wait_page;
+ 	wait_queue_entry_t *wait = &wait_page.wait;
+ 	bool bit_is_set;
+@@ -1318,7 +1338,7 @@ static inline __sched int folio_wait_bit_common(struct folio *folio, int bit_nr,
+ 	init_wait(wait);
+ 	wait->flags = behavior == EXCLUSIVE ? WQ_FLAG_EXCLUSIVE : 0;
+ 	wait->func = wake_page_function;
+-	wait_page.page = &folio->page;
++	wait_page.folio = folio;
+ 	wait_page.bit_nr = bit_nr;
+ 
+ 	for (;;) {
+@@ -1398,7 +1418,7 @@ EXPORT_SYMBOL(folio_wait_bit_killable);
+ 
+ int __sched wait_on_page_bit_killable(struct page *page, int bit_nr)
+ {
+-	wait_queue_head_t *q = page_waitqueue(page);
++	wait_queue_head_t *q = folio_waitqueue(page_folio(page));
+ 	return wait_on_page_bit_common(q, page, bit_nr, TASK_KILLABLE, SHARED);
+ }
+ EXPORT_SYMBOL(wait_on_page_bit_killable);
+@@ -1418,27 +1438,46 @@ void put_and_wait_on_page_locked(struct page *page)
+ 	wait_queue_head_t *q;
+ 
+ 	page = compound_head(page);
+-	q = page_waitqueue(page);
++	q = folio_waitqueue(page_folio(page));
+ 	wait_on_page_bit_common(q, page, PG_locked, TASK_UNINTERRUPTIBLE, DROP);
+ }
+ 
+ /**
+- * add_page_wait_queue - Add an arbitrary waiter to a page's wait queue
+- * @page: Page defining the wait queue of interest
++ * folio_add_wait_queue - Add an arbitrary waiter to a folio's wait queue
++ * @folio: Folio defining the wait queue of interest
+  * @waiter: Waiter to add to the queue
+  *
+- * Add an arbitrary @waiter to the wait queue for the nominated @page.
++ * Add an arbitrary @waiter to the wait queue for the nominated @folio.
+  */
+-void add_page_wait_queue(struct page *page, wait_queue_entry_t *waiter)
++void folio_add_wait_queue(struct folio *folio, wait_queue_entry_t *waiter)
+ {
+-	wait_queue_head_t *q = page_waitqueue(page);
++	wait_queue_head_t *q = folio_waitqueue(folio);
+ 	unsigned long flags;
+ 
+ 	spin_lock_irqsave(&q->lock, flags);
+ 	__add_wait_queue_entry_tail(q, waiter);
+-	SetPageWaiters(page);
++	folio_set_waiters(folio);
+ 	spin_unlock_irqrestore(&q->lock, flags);
+ }
++EXPORT_SYMBOL_GPL(folio_add_wait_queue);
++
++/**
++ * add_page_wait_queue - Add an arbitrary waiter to a page's wait queue
++ * @page: Page defining the wait queue of interest
++ * @waiter: Waiter to add to the queue
++ *
++ * Add an arbitrary @waiter to the wait queue for the nominated @page.
++ *
++ * Upstream patch 29/90 renamed this to folio_add_wait_queue() outright.  Here
++ * the page entry point stays because it is EXPORT_SYMBOL_GPL and the only
++ * in-tree caller, fs/cachefiles/rdwr.c, still has a struct page to hand over;
++ * CONFIG_CACHEFILES is not set in this configuration, but keeping the wrapper
++ * means the file keeps building for anyone who turns it on.
++ */
++void add_page_wait_queue(struct page *page, wait_queue_entry_t *waiter)
++{
++	folio_add_wait_queue(page_folio(page), waiter);
++}
+ EXPORT_SYMBOL_GPL(add_page_wait_queue);
+ 
+ #ifndef clear_bit_unlock_is_negative_byte
+@@ -1604,7 +1643,7 @@ EXPORT_SYMBOL_GPL(page_endio);
+ void __sched __lock_page(struct page *__page)
+ {
+ 	struct page *page = compound_head(__page);
+-	wait_queue_head_t *q = page_waitqueue(page);
++	wait_queue_head_t *q = folio_waitqueue(page_folio(page));
+ 	wait_on_page_bit_common(q, page, PG_locked, TASK_UNINTERRUPTIBLE,
+ 				EXCLUSIVE);
+ }
+@@ -1624,7 +1663,7 @@ EXPORT_SYMBOL(__folio_lock);
+ int __sched __lock_page_killable(struct page *__page)
+ {
+ 	struct page *page = compound_head(__page);
+-	wait_queue_head_t *q = page_waitqueue(page);
++	wait_queue_head_t *q = folio_waitqueue(page_folio(page));
+ 	return wait_on_page_bit_common(q, page, PG_locked, TASK_KILLABLE,
+ 					EXCLUSIVE);
+ }

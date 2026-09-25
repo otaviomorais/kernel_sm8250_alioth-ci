@@ -48,6 +48,82 @@ O workflow aplica G1, G2.1 e G2.2a somente quando `enable_folios_g22=true`;
 `enable_folios_g2=true` valida apenas G1+G2.1 e `enable_folios_g1=true`
 valida apenas G1.
 
+## G2.3f
+
+`e404-folio-g2.3f.patch` aplica, sobre o G2.3e, o patch upstream 29/90
+(`mm/filemap: Convert page wait queues to be folios`).
+
+Este é o **primeiro estágio que converte um tipo existente**, em vez de apenas
+acrescentar uma API paralela. Tudo até aqui era aditivo: os estágios G1 a G2.3e
+adicionavam símbolos `folio_*` sem tocar no caminho de `struct page`.
+
+O que muda:
+
+- `struct wait_page_key` e `struct wait_page_queue` passam a carregar
+  `struct folio *folio` no lugar de `struct page *page`;
+- `page_waitqueue(struct page *)` vira `folio_waitqueue(struct folio *)`, e
+  `page_wait_table[]` vira `folio_wait_table[]`;
+- `wake_page_function()` casa folio contra folio, inclusive no `test_bit()` que
+  decide se interrompe a varredura da fila;
+- `folio_add_wait_queue()` passa a ser a implementação, e
+  `add_page_wait_queue()` **continua existindo** como wrapper fino que resolve
+  `page_folio()` e delega.
+
+### `fs/cachefiles/rdwr.c` deliberadamente não convertido
+
+O upstream reescreve `fs/cachefiles/rdwr.c` para ler `key->folio`, mas a cópia
+do E404 **não usa esse campo**. Ela usa a API `wait_bit` genérica:
+
+```c
+struct wait_bit_key *key = _key;
+struct page *page = wait->private;
+...
+if (key->flags != &page->flags || key->bit_nr != PG_locked)
+```
+
+E o `struct wait_bit_key` do E404 (`include/linux/wait_bit.h`) tem layout
+`{ void *flags; int bit_nr; unsigned long timeout; }`, que **não** é o mesmo do
+`struct wait_page_key`. O comentário antigo em `mm/filemap.c` ("This has the same
+layout as wait_bit_key - see fs/cachefiles/rdwr.c") já era falso no 4.19: a API
+`wait_bit` genérica foi reescrita depois dessa versão. Esse comentário foi
+corrigido neste estágio.
+
+Como o cachefiles se ancora em `key->flags` + `wait->private` e chama
+`add_page_wait_queue()` com uma `struct page`, **manter o wrapper é o que mantém
+o arquivo correto sem modificação alguma**. Além disso `CONFIG_CACHEFILES` não
+está no config final deste build, então o arquivo nem compila hoje; o wrapper
+evita deixar uma quebra latente para quem ligar a opção.
+
+### Simetria entre quem acorda e quem espera
+
+Este patch converte a chave, então quem acorda e quem espera precisam resolver o
+**mesmo** folio, senão os dois caem em buckets diferentes do hash para o mesmo
+objeto. Por isso, nos dois lados:
+
+- `wake_up_page_bit()` e `wait_on_page_bit()` resolvem `page_folio(page)`;
+- o bit `PG_waiters` é lido e escrito pelo folio nos dois lados
+  (`folio_test_waiters` / `folio_set_waiters` / `folio_clear_waiters`).
+
+O que **permanece em nível de `struct page` de propósito**: o bit realmente
+esperado (`test_bit(bit_nr, &page->flags)`) e o `put_page(page)` do caminho
+`DROP`. O caller pediu uma página específica e é dono daquela referência; trocar
+isso seria mexer na contabilidade de referências, não na conversão de tipo.
+
+### Índice de bucket inalterado
+
+`hash_ptr()` opera sobre o valor do ponteiro, e `page_folio(page)` devolve o
+endereço da page head, que é exatamente o endereço que o código antigo hasheava
+para uma página de ordem 0. Neste build **todas** as páginas do page cache são
+de ordem 0, porque `CONFIG_TRANSPARENT_HUGEPAGE` não está no config. Portanto o
+hash, e logo a distribuição pelas 256 filas, é o mesmo de antes.
+
+### Hunk de `__folio_lock_async()` omitido
+
+O upstream também ajusta `__folio_lock_async()`, que recebe um
+`struct wait_page_queue *`. O E404 não tem `__folio_lock_async()` nem
+`lock_page_async()`: eles foram adicionados no 5.8, junto com o suporte a page
+lock assíncrono. Não há a quem aplicar o hunk.
+
 ## G2.3e
 
 `e404-folio-g2.3e.patch` adiciona, sobre o G2.3d, o patch upstream 28/90:
@@ -59,7 +135,7 @@ valida apenas G1.
 callers, logo isso nao muda comportamento.
 
 A chave de waitqueue (`struct wait_page_key`) continua com `struct page`;
-isso e convertido pelo patch upstream 29/90.
+isso e convertido pelo patch upstream 29/90, no estágio G2.3f acima.
 
 ### Patch upstream 30/90 omitido
 
