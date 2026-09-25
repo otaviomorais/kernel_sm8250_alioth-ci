@@ -38,6 +38,11 @@ on:
         required: false
         type: boolean
         default: false
+      enable_folios_g1:
+        description: 'Integrar o shim G1 de folios Linux (opt-in; mTHP desativado)'
+        required: false
+        type: boolean
+        default: false
       droidspaces_profile:
         description: 'Perfil DroidSpaces (full recomendado; minimal; perfis cumulativos históricos)'
         required: true
@@ -238,6 +243,14 @@ jobs:
             kernel \
             kernel/arch/arm64/configs/vendor/alioth_defconfig
           echo "MGLRU_SUFFIX=-mglru" >> "$GITHUB_ENV"
+
+      - name: Integrar folio G1 (type shim upstream, opt-in)
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g1 == 'true')
+        run: |
+          set -euo pipefail
+          echo "Aplicando o shim G1 de folios; mTHP permanece desabilitado..."
+          bash folio/apply-g1.sh kernel
+          echo "FOLIO_SUFFIX=-folio-g1" >> "$GITHUB_ENV"
 
       - name: Checkout KernelSU-Next legacy (UAPI 2)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false') && (inputs.ksu_stack == 'legacy-susfs2-experimental')
@@ -613,6 +626,17 @@ jobs:
           test -z "$(find kernel -type f -name '*.rej' -print -quit)"
           echo 'MGLRU validado no .config final.'
 
+      - name: Validar folio G1 no kernel
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g1 == 'true')
+        run: |
+          set -euo pipefail
+          grep -q 'struct folio' kernel/include/linux/mm_types.h
+          grep -q 'page_folio' kernel/include/linux/page-flags.h
+          grep -q 'folio_nr_pages' kernel/include/linux/mm.h
+          ! grep -q 'CONFIG_MTHP' kernel/mm/Kconfig
+          test -z "$(find kernel -type f -name '*.rej' -print -quit)"
+          echo 'Folio G1 validado; mTHP continua desabilitado.'
+
       - name: Compilar Kernel (Image, dtbs, dtbo.img)
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |
@@ -652,7 +676,7 @@ jobs:
           cp dist/dtbo.img "$AK3_DIR/dtbo.img"
           chmod 755 "$AK3_DIR/META-INF/com/google/android/update-binary"
 
-          ZIP_NAME="AnyKernel3-Alioth-E404-BPF-${SHORT_SHA}-${PROFILE_LABEL}${MGLRU_SUFFIX:-}${KSU_STACK_SUFFIX:-}.zip"
+          ZIP_NAME="AnyKernel3-Alioth-E404-BPF-${SHORT_SHA}-${PROFILE_LABEL}${MGLRU_SUFFIX:-}${FOLIO_SUFFIX:-}${KSU_STACK_SUFFIX:-}.zip"
           cd "$AK3_DIR"
           zip -r -X "../dist/$ZIP_NAME" .
           cd ..
@@ -707,7 +731,7 @@ jobs:
         if: steps.check_upstream.outputs.should_build == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: alioth-e404-bpf-${{ steps.check_upstream.outputs.short_sha }}-${{ steps.droidspaces_profile.outputs.label || 'off' }}${{ env.MGLRU_SUFFIX }}${{ steps.ksu_stack.outputs.suffix }}
+          name: alioth-e404-bpf-${{ steps.check_upstream.outputs.short_sha }}-${{ steps.droidspaces_profile.outputs.label || 'off' }}${{ env.MGLRU_SUFFIX }}${{ env.FOLIO_SUFFIX }}${{ steps.ksu_stack.outputs.suffix }}
           path: dist/
           retention-days: 14
 
@@ -723,8 +747,9 @@ jobs:
           PROFILE_LABEL="${DROIDSPACES_PROFILE:-off}"
           STACK_SUFFIX="${KSU_STACK_SUFFIX:-}"
           MGLRU_SUFFIX="${MGLRU_SUFFIX:-}"
+          FOLIO_SUFFIX="${FOLIO_SUFFIX:-}"
           BUILD_DATE=$(date -u +'%Y-%m-%d')
-          TAG_NAME="e404-bpf-${BUILD_DATE}-${SHORT_SHA}-${PROFILE_LABEL}${MGLRU_SUFFIX}${STACK_SUFFIX}"
+          TAG_NAME="e404-bpf-${BUILD_DATE}-${SHORT_SHA}-${PROFILE_LABEL}${MGLRU_SUFFIX}${FOLIO_SUFFIX}${STACK_SUFFIX}"
 
           KSU_STATUS="Ativado (KernelSU-Next + SUSFS v1.5.5 completo: SUS Maps, Try Umount, Open Redirect, Auto Try Umount Bind, Hide Symbols, OverlayFS Auto Kstat)"
           if [ "${{ inputs.ksu_stack || 'legacy-v1' }}" = "legacy-susfs2-experimental" ] && [ "${{ github.event.inputs.enable_ksu }}" != "false" ]; then
@@ -761,6 +786,11 @@ jobs:
           else
             MGLRU_STATUS="Desativado (baseline preservado)"
           fi
+          if [ -n "$FOLIO_SUFFIX" ]; then
+            FOLIO_STATUS="G1 ativado (type shim upstream; mTHP desativado)"
+          else
+            FOLIO_STATUS="Desativado (baseline preservado)"
+          fi
 
           cat <<EOF > release_notes.md
           # Alioth Kernel E404 BPF (Poco F3 / Redmi K40)
@@ -774,6 +804,7 @@ jobs:
           - **KernelSU / SUSFS:** ${KSU_STATUS}
           - **Droidspaces Support:** ${DROIDSPACES_STATUS}
           - **MGLRU:** ${MGLRU_STATUS}
+          - **Folios:** ${FOLIO_STATUS}
           - **Otimizações:** TCP Google BBR, ZSTD (zRAM), Kyber I/O (UFS 3.1), PSI
 
           ### Informações do Build
@@ -805,7 +836,7 @@ jobs:
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             echo "Release $TAG_NAME já existe. Atualizando notas e substituindo arquivos..."
             gh release edit "$TAG_NAME" \
-              --title "Alioth Kernel E404 BPF (${BUILD_DATE} - ${SHORT_SHA} - ${PROFILE_LABEL}${MGLRU_SUFFIX}${STACK_SUFFIX})" \
+              --title "Alioth Kernel E404 BPF (${BUILD_DATE} - ${SHORT_SHA} - ${PROFILE_LABEL}${MGLRU_SUFFIX}${FOLIO_SUFFIX}${STACK_SUFFIX})" \
               --notes-file release_notes.md
             gh release upload "$TAG_NAME" \
               dist/"$ZIP_NAME" \
@@ -819,7 +850,7 @@ jobs:
               dist/boot.img \
               dist/dtbo.img \
               dist/Image \
-              --title "Alioth Kernel E404 BPF (${BUILD_DATE} - ${SHORT_SHA} - ${PROFILE_LABEL}${MGLRU_SUFFIX}${STACK_SUFFIX})" \
+              --title "Alioth Kernel E404 BPF (${BUILD_DATE} - ${SHORT_SHA} - ${PROFILE_LABEL}${MGLRU_SUFFIX}${FOLIO_SUFFIX}${STACK_SUFFIX})" \
               --target "$GITHUB_SHA" \
               --notes-file release_notes.md
           fi

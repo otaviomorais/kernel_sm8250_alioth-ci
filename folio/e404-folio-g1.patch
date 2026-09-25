@@ -1,0 +1,157 @@
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 16fe5f9..5de29bb 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -800,6 +800,47 @@ static inline unsigned int compound_order(struct page *page)
+ 	return page[1].compound_order;
+ }
+ 
++static inline unsigned long compound_nr(struct page *page)
++{
++	if (!PageHead(page))
++		return 1;
++	return 1UL << compound_order(page);
++}
++
++static inline bool hpage_pincount_available(struct page *page)
++{
++	page = compound_head(page);
++	return PageCompound(page) && compound_order(page) > 1;
++}
++
++static inline unsigned int folio_order(struct folio *folio)
++{
++	return compound_order(&folio->page);
++}
++
++static inline long folio_nr_pages(struct folio *folio)
++{
++	return compound_nr(&folio->page);
++}
++
++static inline struct folio *folio_next(struct folio *folio)
++{
++	return (struct folio *)folio_page(folio, folio_nr_pages(folio));
++}
++
++static inline unsigned int folio_shift(struct folio *folio)
++{
++	return PAGE_SHIFT + folio_order(folio);
++}
++
++static inline size_t folio_size(struct folio *folio)
++{
++	return PAGE_SIZE << folio_order(folio);
++}
++
++#define offset_in_folio(folio, p) \
++	((unsigned long)(p) & (folio_size(folio) - 1))
++
+ static inline void set_compound_order(struct page *page, unsigned int order)
+ {
+ 	page[1].compound_order = order;
+@@ -939,6 +980,11 @@ static inline enum zone_type page_zonenum(const struct page *page)
+ 	return (page->flags >> ZONES_PGSHIFT) & ZONES_MASK;
+ }
+ 
++static inline enum zone_type folio_zonenum(const struct folio *folio)
++{
++	return page_zonenum(&folio->page);
++}
++
+ #ifdef CONFIG_ZONE_DEVICE
+ static inline bool is_zone_device_page(const struct page *page)
+ {
+@@ -1226,6 +1272,16 @@ static inline pg_data_t *page_pgdat(const struct page *page)
+ 	return NODE_DATA(page_to_nid(page));
+ }
+ 
++static inline struct zone *folio_zone(const struct folio *folio)
++{
++	return page_zone(&folio->page);
++}
++
++static inline pg_data_t *folio_pgdat(const struct folio *folio)
++{
++	return page_pgdat(&folio->page);
++}
++
+ #ifdef SECTION_IN_PAGE_FLAGS
+ static inline void set_page_section(struct page *page, unsigned long section)
+ {
+diff --git a/include/linux/mm_types.h b/include/linux/mm_types.h
+index a1e8a0b..b7a9d4e 100644
+--- a/include/linux/mm_types.h
++++ b/include/linux/mm_types.h
+@@ -215,6 +215,45 @@ struct page {
+ #endif
+ } _struct_page_alignment;
+ 
++/*
++ * Transitional folio representation for the E404 4.19 base.
++ *
++ * Keep this union layout identical to struct page.  The E404 vendor page
++ * stores the memcg pointer directly, unlike newer Linux's memcg_data word.
++ */
++struct folio {
++	union {
++		struct {
++			unsigned long flags;
++			struct list_head lru;
++			struct address_space *mapping;
++			pgoff_t index;
++			unsigned long private;
++			atomic_t _mapcount;
++			atomic_t _refcount;
++#ifdef CONFIG_MEMCG
++			struct mem_cgroup *mem_cgroup;
++#endif
++		};
++		struct page page;
++	};
++} _struct_page_alignment;
++
++static_assert(sizeof(struct page) == sizeof(struct folio));
++#define FOLIO_MATCH(pg, fl) \
++	static_assert(offsetof(struct page, pg) == offsetof(struct folio, fl))
++FOLIO_MATCH(flags, flags);
++FOLIO_MATCH(lru, lru);
++FOLIO_MATCH(compound_head, lru);
++FOLIO_MATCH(index, index);
++FOLIO_MATCH(private, private);
++FOLIO_MATCH(_mapcount, _mapcount);
++FOLIO_MATCH(_refcount, _refcount);
++#ifdef CONFIG_MEMCG
++FOLIO_MATCH(mem_cgroup, mem_cgroup);
++#endif
++#undef FOLIO_MATCH
++
+ #define PAGE_FRAG_CACHE_MAX_SIZE	__ALIGN_MASK(32768, ~PAGE_MASK)
+ #define PAGE_FRAG_CACHE_MAX_ORDER	get_order(PAGE_FRAG_CACHE_MAX_SIZE)
+ 
+diff --git a/include/linux/page-flags.h b/include/linux/page-flags.h
+index 260c442..074f96d 100644
+--- a/include/linux/page-flags.h
++++ b/include/linux/page-flags.h
+@@ -137,6 +137,7 @@ enum pageflags {
+ #ifndef __GENERATING_BOUNDS_H
+ 
+ struct page;	/* forward declaration */
++struct folio;	/* forward declaration */
+ 
+ static inline struct page *compound_head(struct page *page)
+ {
+@@ -147,6 +148,13 @@ static inline struct page *compound_head(struct page *page)
+ 	return page;
+ }
+ 
++#define page_folio(p) \
++	(_Generic((p), \
++		const struct page *: (const struct folio *)compound_head(p), \
++		struct page *: (struct folio *)compound_head(p)))
++
++#define folio_page(folio, n) nth_page(&(folio)->page, n)
++
+ static __always_inline int PageTail(struct page *page)
+ {
+ 	return READ_ONCE(page->compound_head) & 1;
