@@ -48,6 +48,33 @@ O workflow aplica G1, G2.1 e G2.2a somente quando `enable_folios_g22=true`;
 `enable_folios_g2=true` valida apenas G1+G2.1 e `enable_folios_g1=true`
 valida apenas G1.
 
+## G2.3c
+
+`e404-folio-g2.3c.patch` adiciona, sobre o G2.3b, os patches upstream 23/90 e
+24/90:
+
+- `folio_rotate_reclaimable()` em `mm/swap.c` (e prototipo em
+  `include/linux/swap.h`);
+- `folio_wake()` (static) e `folio_end_writeback()` em `mm/filemap.c`
+  (e prototipo em `include/linux/pagemap.h`).
+
+Adaptação específica do E404, e o ponto mais importante deste estágio: o
+upstream 5.16 reescreve o corpo de `rotate_reclaimable_page()` para usar
+`pagevec_add_and_need_flush()`. O E404 nao tem essa funcao; a versao dele e
+
+```c
+if (!pagevec_add(pvec, page) || PageCompound(page))
+	pagevec_move_tail(pvec);
+```
+
+ou seja, o check de pagina composta e explicito e tem de ser preservado. Na
+variante de folio ele vira `folio_test_multi(folio)`, que para a cabeca do
+folio e exatamente equivalente a `PageCompound(&folio->page)`. Traduzir
+literalmente o upstream teria **perdido esse flush de cauda para THP**,
+alterando a contabilidade de reclaim sem nenhum erro de compilacao.
+
+`rotate_reclaimable_page()` e `end_page_writeback()` ficam **intactos**.
+
 ## G2.3b
 
 `e404-folio-g2.3b.patch` adiciona, sobre o G2.3a, a API de lock de folio

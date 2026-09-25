@@ -1,0 +1,118 @@
+diff --git a/include/linux/pagemap.h b/include/linux/pagemap.h
+index a4fcad2..6cd1af4 100644
+--- a/include/linux/pagemap.h
++++ b/include/linux/pagemap.h
+@@ -764,6 +764,7 @@ static inline __sched void wait_on_page_writeback(struct page *page)
+ }
+ 
+ extern void end_page_writeback(struct page *page);
++void folio_end_writeback(struct folio *folio);
+ void wait_for_stable_page(struct page *page);
+ 
+ void page_endio(struct page *page, bool is_write, int err);
+diff --git a/include/linux/swap.h b/include/linux/swap.h
+index d17f1ac..eb0d5f1 100644
+--- a/include/linux/swap.h
++++ b/include/linux/swap.h
+@@ -356,6 +356,7 @@ extern void lru_add_drain(void);
+ extern void lru_add_drain_cpu(int cpu);
+ extern void lru_add_drain_all(void);
+ extern void rotate_reclaimable_page(struct page *page);
++void folio_rotate_reclaimable(struct folio *folio);
+ extern void deactivate_file_page(struct page *page);
+ extern void deactivate_page(struct page *page);
+ extern void mark_page_lazyfree(struct page *page);
+diff --git a/mm/filemap.c b/mm/filemap.c
+index 4e65c31..43eb7bb 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -1106,6 +1106,13 @@ static void wake_up_page(struct page *page, int bit)
+ 	wake_up_page_bit(page, bit);
+ }
+ 
++static void folio_wake(struct folio *folio, int bit)
++{
++	if (!folio_test_waiters(folio))
++		return;
++	wake_up_page_bit(&folio->page, bit);
++}
++
+ /*
+  * A choice of three behaviors for wait_on_page_bit_common():
+  */
+@@ -1357,6 +1364,40 @@ void end_page_writeback(struct page *page)
+ }
+ EXPORT_SYMBOL(end_page_writeback);
+ 
++/**
++ * folio_end_writeback - End writeback against a folio.
++ * @folio: The folio.
++ */
++void folio_end_writeback(struct folio *folio)
++{
++	/*
++	 * folio_test_clear_reclaim() could be used here but it is an
++	 * atomic operation and overkill in this particular case. Failing
++	 * to shuffle a folio marked for immediate reclaim is too mild
++	 * a gain to justify taking an atomic operation penalty at the
++	 * end of every folio writeback.
++	 */
++	if (folio_test_reclaim(folio)) {
++		folio_clear_reclaim(folio);
++		folio_rotate_reclaimable(folio);
++	}
++
++	/*
++	 * Writeback does not hold a folio reference of its own, relying
++	 * on truncation to wait for the clearing of PG_writeback.
++	 * But here we must make sure that the folio is not freed and
++	 * reused before the folio_wake().
++	 */
++	folio_get(folio);
++	if (!test_clear_page_writeback(&folio->page))
++		BUG();
++
++	smp_mb__after_atomic();
++	folio_wake(folio, PG_writeback);
++	folio_put(folio);
++}
++EXPORT_SYMBOL(folio_end_writeback);
++
+ /*
+  * After completing I/O on a page, call this routine to update the page
+  * flags appropriately
+diff --git a/mm/swap.c b/mm/swap.c
+index 8de0336..60eeb49 100644
+--- a/mm/swap.c
++++ b/mm/swap.c
+@@ -262,6 +262,30 @@ void rotate_reclaimable_page(struct page *page)
+ 	}
+ }
+ 
++/*
++ * Writeback is about to end against a folio which has been marked for
++ * immediate reclaim.  If it still appears to be reclaimable, move it
++ * to the tail of the inactive list.
++ *
++ * folio_rotate_reclaimable() must disable IRQs, to prevent nasty races.
++ */
++void folio_rotate_reclaimable(struct folio *folio)
++{
++	if (!folio_test_locked(folio) && !folio_test_dirty(folio) &&
++	    !folio_test_unevictable(folio) && folio_test_lru(folio)) {
++		struct pagevec *pvec;
++		unsigned long flags;
++
++		folio_get(folio);
++		local_irq_save(flags);
++		pvec = this_cpu_ptr(&lru_rotate_pvecs);
++		if (!pagevec_add(pvec, &folio->page) || folio_test_multi(folio))
++			pagevec_move_tail(pvec);
++		local_irq_restore(flags);
++	}
++}
++EXPORT_SYMBOL_GPL(folio_rotate_reclaimable);
++
+ static void update_page_reclaim_stat(struct lruvec *lruvec,
+ 				     int file, int rotated)
+ {

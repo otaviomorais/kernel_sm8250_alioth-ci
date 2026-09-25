@@ -68,6 +68,11 @@ on:
         required: false
         type: boolean
         default: false
+      enable_folios_g23c:
+        description: 'Integrar o G2.3c de folios (folio_end_writeback/rotate_reclaimable; opt-in)'
+        required: false
+        type: boolean
+        default: false
       droidspaces_profile:
         description: 'Perfil DroidSpaces (full recomendado; minimal; perfis cumulativos históricos)'
         required: true
@@ -316,6 +321,14 @@ jobs:
           echo "Aplicando o G2.3b de folios (API de lock de folio)..."
           bash folio/apply-g23b.sh kernel
           echo "FOLIO_SUFFIX=-folio-g23b" >> "$GITHUB_ENV"
+
+      - name: Integrar folio G2.3c (folio end writeback, opt-in)
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23c == 'true')
+        run: |
+          set -euo pipefail
+          echo "Aplicando o G2.3c de folios (folio_end_writeback/rotate_reclaimable)..."
+          bash folio/apply-g23c.sh kernel
+          echo "FOLIO_SUFFIX=-folio-g23c" >> "$GITHUB_ENV"
 
       - name: Checkout KernelSU-Next legacy (UAPI 2)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false') && (inputs.ksu_stack == 'legacy-susfs2-experimental')
@@ -783,6 +796,20 @@ jobs:
           test -z "$(find kernel -type f -name '*.rej' -print -quit)"
           echo 'Folio G2.3b validado; caminho de lock de pagina intacto.'
 
+      - name: Validar folio G2.3c no kernel
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23c == 'true')
+        run: |
+          set -euo pipefail
+          grep -q 'void folio_rotate_reclaimable' kernel/mm/swap.c
+          grep -q 'void folio_end_writeback' kernel/mm/filemap.c
+          grep -q 'static void folio_wake' kernel/mm/filemap.c
+          grep -q 'folio_end_writeback' kernel/include/linux/pagemap.h
+          grep -q 'folio_rotate_reclaimable' kernel/include/linux/swap.h
+          grep -q '^void rotate_reclaimable_page(struct page \*page)' kernel/mm/swap.c
+          grep -q '^void end_page_writeback(struct page \*page)' kernel/mm/filemap.c
+          test -z "$(find kernel -type f -name '*.rej' -print -quit)"
+          echo 'Folio G2.3c validado; caminhos de pagina intactos.'
+
       - name: Compilar Kernel (Image, dtbs, dtbo.img)
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |
@@ -932,7 +959,9 @@ jobs:
           else
             MGLRU_STATUS="Desativado (baseline preservado)"
           fi
-          if [ "$FOLIO_SUFFIX" = "-folio-g23b" ]; then
+          if [ "$FOLIO_SUFFIX" = "-folio-g23c" ]; then
+            FOLIO_STATUS="G2.3c ativado (folio_end_writeback + folio_rotate_reclaimable; caminho de pagina intacto)"
+          elif [ "$FOLIO_SUFFIX" = "-folio-g23b" ]; then
             FOLIO_STATUS="G2.3b ativado (API de lock de folio; caminho de pagina intacto)"
           elif [ "$FOLIO_SUFFIX" = "-folio-g23a" ]; then
             FOLIO_STATUS="G2.3a ativado (API de page cache: index/pos/mapping; sem conversao de callers)"
