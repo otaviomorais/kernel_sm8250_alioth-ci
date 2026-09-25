@@ -805,7 +805,7 @@ jobs:
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             echo "Release $TAG_NAME já existe. Atualizando notas e substituindo arquivos..."
             gh release edit "$TAG_NAME" \
-              --title "Alioth Kernel E404 BPF (${BUILD_DATE} - ${SHORT_SHA} - ${PROFILE_LABEL}${STACK_SUFFIX})" \
+              --title "Alioth Kernel E404 BPF (${BUILD_DATE} - ${SHORT_SHA} - ${PROFILE_LABEL}${MGLRU_SUFFIX}${STACK_SUFFIX})" \
               --notes-file release_notes.md
             gh release upload "$TAG_NAME" \
               dist/"$ZIP_NAME" \
@@ -819,6 +819,7 @@ jobs:
               dist/boot.img \
               dist/dtbo.img \
               dist/Image \
-              --title "Alioth Kernel E404 BPF (${BUILD_DATE} - ${SHORT_SHA} - ${PROFILE_LABEL}${STACK_SUFFIX})" \
+              --title "Alioth Kernel E404 BPF (${BUILD_DATE} - ${SHORT_SHA} - ${PROFILE_LABEL}${MGLRU_SUFFIX}${STACK_SUFFIX})" \
+              --target "$GITHUB_SHA" \
               --notes-file release_notes.md
           fi
