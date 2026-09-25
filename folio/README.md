@@ -48,6 +48,34 @@ O workflow aplica G1, G2.1 e G2.2a somente quando `enable_folios_g22=true`;
 `enable_folios_g2=true` valida apenas G1+G2.1 e `enable_folios_g1=true`
 valida apenas G1.
 
+## G2.3a
+
+`e404-folio-g2.3a.patch` adiciona, sobre o G2.2b, a API de page cache
+re-derivada dos patches upstream 13/90 a 16/90:
+
+- `folio_index()`, `folio_next_index()`, `folio_file_page()`, `folio_contains()`;
+- `folio_pos()`, `folio_file_pos()`;
+- `folio_file_mapping()` e o prototipo de `folio_mapping()`;
+- `folio_swap_entry()` em `include/linux/swap.h`;
+- `folio_mapping()` em `mm/util.c`;
+- `swapcache_mapping()` em `mm/swapfile.c`.
+
+Adaptações ao E404, deliberadamente aditivas:
+
+- `page_mapping()` continua em `mm/util.c` com o corpo original, e suas
+  declarações duplicadas em `include/linux/mm.h` **não são tocadas**;
+- `page_mapping_file()` (variante LA, que vive em `mm/util.c` e não em
+  `pagemap.h`) fica intacta;
+- `__page_file_mapping()` continua existindo em `mm/swapfile.c`; o
+  `swapcache_mapping()` é adicionado **ao lado**, sem renomear nada;
+- `mm/folio-compat.c` **não é criado**: ele existe no upstream apenas para
+  mover o corpo de `page_mapping()` para fora do header. Como aqui nada e
+  movido, o arquivo seria desnecessario, e `mm/Makefile` fica intocado;
+- `page_file_mapping()` em `include/linux/mm.h` fica como esta.
+
+Nenhum caller e convertido. As funcoes `folio_*` existem e sao validadas em
+tempo de compilacao; a conversao de `filemap.c` vem no estagio seguinte.
+
 ## G2.2b
 
 `e404-folio-g2.2b.patch` adiciona, sobre o G2.2a, dois blocos do upstream

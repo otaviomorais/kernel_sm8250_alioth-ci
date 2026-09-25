@@ -58,6 +58,11 @@ on:
         required: false
         type: boolean
         default: false
+      enable_folios_g23a:
+        description: 'Integrar o G2.3a de folios (page cache index/mapping API; opt-in)'
+        required: false
+        type: boolean
+        default: false
       droidspaces_profile:
         description: 'Perfil DroidSpaces (full recomendado; minimal; perfis cumulativos históricos)'
         required: true
@@ -290,6 +295,14 @@ jobs:
           echo "Aplicando o G2.2b de folios (LRU classic + private data)..."
           bash folio/apply-g22b.sh kernel
           echo "FOLIO_SUFFIX=-folio-g22b" >> "$GITHUB_ENV"
+
+      - name: Integrar folio G2.3a (page cache index/mapping API, opt-in)
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23a == 'true')
+        run: |
+          set -euo pipefail
+          echo "Aplicando o G2.3a de folios (API de page cache)..."
+          bash folio/apply-g23a.sh kernel
+          echo "FOLIO_SUFFIX=-folio-g23a" >> "$GITHUB_ENV"
 
       - name: Checkout KernelSU-Next legacy (UAPI 2)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false') && (inputs.ksu_stack == 'legacy-susfs2-experimental')
@@ -720,6 +733,23 @@ jobs:
           test -z "$(find kernel -type f -name '*.rej' -print -quit)"
           echo 'Folio G2.2b validado; callers ainda nao convertidos.'
 
+      - name: Validar folio G2.3a no kernel
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23a == 'true')
+        run: |
+          set -euo pipefail
+          P=kernel/include/linux/pagemap.h
+          for sym in folio_index folio_next_index folio_file_page folio_contains \
+                     folio_file_mapping folio_pos folio_file_pos; do
+            grep -q "$sym" "$P" || { echo "FATAL: falta $sym"; exit 1; }
+          done
+          grep -q 'folio_swap_entry' kernel/include/linux/swap.h
+          grep -q 'folio_mapping' kernel/mm/util.c
+          grep -q 'swapcache_mapping' kernel/mm/swapfile.c
+          grep -q '^struct address_space \*page_mapping(struct page \*page)' kernel/mm/util.c
+          grep -q '__page_file_mapping' kernel/mm/swapfile.c
+          test -z "$(find kernel -type f -name '*.rej' -print -quit)"
+          echo 'Folio G2.3a validado; page_mapping() e __page_file_mapping() intactos.'
+
       - name: Compilar Kernel (Image, dtbs, dtbo.img)
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |
@@ -869,7 +899,9 @@ jobs:
           else
             MGLRU_STATUS="Desativado (baseline preservado)"
           fi
-          if [ "$FOLIO_SUFFIX" = "-folio-g22b" ]; then
+          if [ "$FOLIO_SUFFIX" = "-folio-g23a" ]; then
+            FOLIO_STATUS="G2.3a ativado (API de page cache: index/pos/mapping; sem conversao de callers)"
+          elif [ "$FOLIO_SUFFIX" = "-folio-g22b" ]; then
             FOLIO_STATUS="G2.2b ativado (LRU classic + private data; sem conversao de callers)"
           elif [ "$FOLIO_SUFFIX" = "-folio-g22" ]; then
             FOLIO_STATUS="G2.2a ativado (flags de folio; header-only; page cache, LRU e mTHP fora)"
