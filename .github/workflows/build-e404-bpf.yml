@@ -48,6 +48,11 @@ on:
         required: false
         type: boolean
         default: false
+      enable_folios_g22:
+        description: 'Integrar o G2.2a de folios (flags; header-only; opt-in)'
+        required: false
+        type: boolean
+        default: false
       droidspaces_profile:
         description: 'Perfil DroidSpaces (full recomendado; minimal; perfis cumulativos históricos)'
         required: true
@@ -264,6 +269,14 @@ jobs:
           echo "Aplicando o G2.1 de folios sobre o G1; page cache e mTHP continuam fora..."
           bash folio/apply-g2.sh kernel
           echo "FOLIO_SUFFIX=-folio-g2" >> "$GITHUB_ENV"
+
+      - name: Integrar folio G2.2a (flags, opt-in)
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g22 == 'true')
+        run: |
+          set -euo pipefail
+          echo "Aplicando o G2.2a de folios (page-flags.h) sobre o G2.1..."
+          bash folio/apply-g22.sh kernel
+          echo "FOLIO_SUFFIX=-folio-g22" >> "$GITHUB_ENV"
 
       - name: Checkout KernelSU-Next legacy (UAPI 2)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false') && (inputs.ksu_stack == 'legacy-susfs2-experimental')
@@ -662,6 +675,20 @@ jobs:
           test -z "$(find kernel -type f -name '*.rej' -print -quit)"
           echo 'Folio G2.1 validado; page cache, flags e mTHP continuam fora.'
 
+      - name: Validar folio G2.2a no kernel
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g22 == 'true')
+        run: |
+          set -euo pipefail
+          F=kernel/include/linux/page-flags.h
+          grep -q 'PG_readahead = PG_reclaim' "$F"
+          grep -q 'static inline unsigned long \*folio_flags' "$F"
+          grep -q 'folio_test_swapcache' "$F"
+          grep -q 'folio_test_uptodate' "$F"
+          grep -q 'folio_test_double_map' "$F"
+          grep -q 'folio_has_private' "$F"
+          test -z "$(find kernel -type f -name '*.rej' -print -quit)"
+          echo 'Folio G2.2a validado; somente page-flags.h foi alterado.'
+
       - name: Compilar Kernel (Image, dtbs, dtbo.img)
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |
@@ -811,7 +838,9 @@ jobs:
           else
             MGLRU_STATUS="Desativado (baseline preservado)"
           fi
-          if [ "$FOLIO_SUFFIX" = "-folio-g2" ]; then
+          if [ "$FOLIO_SUFFIX" = "-folio-g22" ]; then
+            FOLIO_STATUS="G2.2a ativado (flags de folio; header-only; page cache, LRU e mTHP fora)"
+          elif [ "$FOLIO_SUFFIX" = "-folio-g2" ]; then
             FOLIO_STATUS="G2.1 ativado (refcount/get/put/RCU; page cache, flags e mTHP fora)"
           elif [ -n "$FOLIO_SUFFIX" ]; then
             FOLIO_STATUS="G1 ativado (type shim upstream; mTHP desativado)"
