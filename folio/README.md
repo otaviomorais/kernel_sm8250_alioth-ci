@@ -48,6 +48,65 @@ O workflow aplica G1, G2.1 e G2.2a somente quando `enable_folios_g22=true`;
 `enable_folios_g2=true` valida apenas G1+G2.1 e `enable_folios_g1=true`
 valida apenas G1.
 
+## G2.4b
+
+`e404-folio-g2.4b.patch` aplica, sobre o G2.4a, o patch upstream 80/90
+(`mm/workingset: Convert workingset_refault() to take a folio`).
+
+`workingset_refault()` passa a receber `struct folio *`, e o chamador resolve
+`page_folio(page)`. As duas flags que ela escrevia — `PG_active` e
+`PG_workingset`, ambas `PF_HEAD` — passam a ser setadas pelos acessores de
+folio, então a operação fica ancorada na page head em vez de whatever o
+chamador tenha passado.
+
+### O caminho do MGLRU continua sendo de page, de propósito
+
+`workingset_refault()` no E404 tem um early return do MGLRU logo no topo:
+
+```c
+if (lru_gen_enabled()) {
+	lru_gen_refault(page, shadow);
+	return;
+}
+```
+
+`lru_gen_refault()` é do MGLRU, não da conversão de folios, então **não** foi
+reescrito. A chamada passou a ser `lru_gen_refault(&folio->page, shadow)` — a
+page head, que é tanto a page que o chamador tinha quanto a dona de
+`PG_workingset`. Reescrever o MGLRU seria sair do escopo do projeto.
+
+### Os contadores ficam sem o split por file/anon
+
+O upstream escreve `WORKINGSET_REFAULT_BASE + file`, que vem do rework de
+vmstat que também renumerou esses itens do enum. O E404 tem os contadores
+simples, `WORKINGSET_REFAULT` / `WORKINGSET_ACTIVATE` / `WORKINGSET_RESTORE`.
+Eles passam a ser carregados com `mod_lruvec_state(..., nr)` em vez de
+`inc_lruvec_state(...)`, para que o valor cobrado continue expresso em
+geometria de folio como o upstream pretende.
+
+Também não há `page_memcg()` para converter: o E404 tira o memcg da entrada
+shadow via `mem_cgroup_from_id()`. O upstream lê do folio, e é por isso que ele
+precisava do `folio_memcg()` do patch 38.
+
+### O que o E404 não tem, continua não tendo
+
+- `workingset_age_nonresident()` não existe no E404 4.19, então a chamada que o
+  upstream converte simplesmente não está aqui;
+- `lru_note_cost()` não existe (0 ocorrências na árvore): é a contabilidade de
+  custo de writeback por CPU que chegou no 5.16. O rename
+  `lru_note_cost_page()` → `lru_note_cost_folio()` é descartado;
+- `include/linux/vmstat.h`: o upstream apaga `inc_lruvec_state()` por ela ficar
+  sem uso. No E404 ela vive em `memcontrol.h` e foi deixada — remover um helper
+  é churn sem benefício, e `dec_lruvec_state()` continua em uso pelo caminho de
+  writeback do G2.4a.
+
+### E404 tem um chamador só
+
+`mm/filemap.c:add_to_page_cache_lru()`. Os outros dois que o upstream converte
+(`do_swap_page()` e `__read_swap_cache_async()`) **não** chamam
+`workingset_refault()` nesta árvore: `get_shadow_from_swap_cache()` também não
+existe aqui.
+
 ## G2.4a
 
 `e404-folio-g2.4a.patch` aplica, sobre o G2.3f, o patch upstream 66/90

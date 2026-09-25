@@ -1,0 +1,168 @@
+From: Codex folio backport <codex@local>
+Subject: [PATCH] E404 folio G2.4b: Convert workingset_refault() to take a folio
+
+Upstream patch 80/90.  workingset_refault() now takes a struct folio, the
+one caller resolves page_folio(), and the two page flags it sets
+(PG_active and PG_workingset, both PF_HEAD) are set through the folio
+accessors, so the operation is anchored on the head page rather than on
+whatever the caller happened to pass.
+
+Divergences from upstream, all deliberate:
+
+  - lru_gen_refault() is still called with &folio->page.  That function
+    belongs to the MGLRU series, not to the folio conversion, so it is
+    left alone; the head page is both what the caller had and the page
+    that owns PG_workingset.
+
+  - The three workingset counters are NOT split by file/anon.  Upstream
+    writes WORKINGSET_REFAULT_BASE + file, which comes from the vmstat
+    rework that also renumbered these enum entries; E404 has the plain
+    WORKINGSET_REFAULT / WORKINGSET_ACTIVATE / WORKINGSET_RESTORE.  They
+    are charged with mod_lruvec_state(..., nr) instead of
+    inc_lruvec_state(...), so the amount stays expressed in folio
+    geometry as upstream intends.
+
+  - There is no page_memcg() call to convert.  E404 takes the memcg out
+    of the shadow entry via mem_cgroup_from_id(); upstream reads it from
+    the folio, which is why it needed folio_memcg() from patch 38.
+
+  - workingset_age_nonresident() does not exist in the E404 4.19 base, so
+    the call the upstream patch converts is simply absent here.
+
+  - The lru_note_cost_page() -> lru_note_cost_folio() rename is dropped.
+    The whole lru_note_cost() machinery (per-cpu writeback cost accounting,
+    added in 5.16) is absent from E404: zero occurrences in the tree.
+
+  - Upstream also deletes inc_lruvec_state() from vmstat.h because it
+    becomes unused there.  In E404 it lives in memcontrol.h and is left
+    in place; removing a helper is churn with no benefit, and
+    dec_lruvec_state() is still used by the G2.4a writeback path.
+
+E404 has a single caller, mm/filemap.c:add_to_page_cache_lru().  The other
+two callers upstream converts (do_swap_page() and __read_swap_cache_async())
+do not call workingset_refault() in this tree: get_shadow_from_swap_cache()
+does not exist here either.
+
+diff --git a/include/linux/swap.h b/include/linux/swap.h
+index eb0d5f1..459a788 100644
+--- a/include/linux/swap.h
++++ b/include/linux/swap.h
+@@ -324,7 +324,7 @@ static inline swp_entry_t folio_swap_entry(struct folio *folio)
+ 
+ /* linux/mm/workingset.c */
+ void *workingset_eviction(struct address_space *mapping, struct page *page);
+-void workingset_refault(struct page *page, void *shadow);
++void workingset_refault(struct folio *folio, void *shadow);
+ void workingset_activation(struct page *page);
+ 
+ /* Only track the nodes of mappings with shadow entries */
+diff --git a/mm/filemap.c b/mm/filemap.c
+index de77477..4c9381b 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -948,7 +948,7 @@ int add_to_page_cache_lru(struct page *page, struct address_space *mapping,
+ 		 */
+ 		WARN_ON_ONCE(PageActive(page));
+ 		if (!(gfp_mask & __GFP_WRITE) && shadow)
+-			workingset_refault(page, shadow);
++			workingset_refault(page_folio(page), shadow);
+ 		lru_cache_add(page);
+ 	}
+ 	return ret;
+diff --git a/mm/workingset.c b/mm/workingset.c
+index 47a9ed8..62219db 100644
+--- a/mm/workingset.c
++++ b/mm/workingset.c
+@@ -343,14 +343,14 @@ void *workingset_eviction(struct address_space *mapping, struct page *page)
+ }
+ 
+ /**
+- * workingset_refault - evaluate the refault of a previously evicted page
+- * @page: the freshly allocated replacement page
+- * @shadow: shadow entry of the evicted page
++ * workingset_refault - evaluate the refault of a previously evicted folio
++ * @folio: the freshly allocated replacement folio
++ * @shadow: shadow entry of the evicted folio
+  *
+  * Calculates and evaluates the refault distance of the previously
+- * evicted page in the context of the node it was allocated in.
++ * evicted folio in the context of the node it was allocated in.
+  */
+-void workingset_refault(struct page *page, void *shadow)
++void workingset_refault(struct folio *folio, void *shadow)
+ {
+ 	unsigned long refault_distance;
+ 	struct pglist_data *pgdat;
+@@ -361,22 +361,32 @@ void workingset_refault(struct page *page, void *shadow)
+ 	unsigned long refault;
+ 	bool workingset;
+ 	int memcgid;
++	int nr;
+ 
++	/*
++	 * MGLRU's own refault path stays page-based: lru_gen_refault() belongs
++	 * to the MGLRU series, not to the folio conversion, and it is not
++	 * rewritten here.  Passing &folio->page hands it the head page, which
++	 * is where PG_workingset lives (PF_HEAD), so this is the same page
++	 * the caller had and the right one for the flag.
++	 */
+ 	if (lru_gen_enabled()) {
+-		lru_gen_refault(page, shadow);
++		lru_gen_refault(&folio->page, shadow);
+ 		return;
+ 	}
+ 
++	nr = folio_nr_pages(folio);
++
+ 	unpack_shadow(shadow, &memcgid, &pgdat, &eviction, &workingset);
+ 	eviction <<= bucket_order;
+ 
+ 	rcu_read_lock();
+ 	/*
+ 	 * Look up the memcg associated with the stored ID. It might
+-	 * have been deleted since the page's eviction.
++	 * have been deleted since the folio's eviction.
+ 	 *
+ 	 * Note that in rare events the ID could have been recycled
+-	 * for a new cgroup that refaults a shared page. This is
++	 * for a new cgroup that refaults a shared folio. This is
+ 	 * impossible to tell from the available data. However, this
+ 	 * should be a rare and limited disturbance, and activations
+ 	 * are always speculative anyway. Ultimately, it's the aging
+@@ -412,7 +422,15 @@ void workingset_refault(struct page *page, void *shadow)
+ 	 */
+ 	refault_distance = (refault - eviction) & EVICTION_MASK;
+ 
+-	inc_lruvec_state(lruvec, WORKINGSET_REFAULT);
++	/*
++	 * Upstream splits these three counters by file/anon
++	 * (WORKINGSET_REFAULT_BASE + file) and charges folio_nr_pages() to
++	 * them.  E404 has the unsplit counters and its memcg comes from the
++	 * shadow entry, not from the folio, so there is no page_memcg() here
++	 * to convert.  The delta form is used so the charge stays expressed in
++	 * folio geometry, as upstream intends.
++	 */
++	mod_lruvec_state(lruvec, WORKINGSET_REFAULT, nr);
+ 
+ 	/*
+ 	 * Compare the distance to the existing workingset size. We
+@@ -422,14 +440,14 @@ void workingset_refault(struct page *page, void *shadow)
+ 	if (refault_distance > active_file)
+ 		goto out;
+ 
+-	SetPageActive(page);
++	folio_set_active(folio);
+ 	atomic_long_inc(&lruvec->inactive_age);
+-	inc_lruvec_state(lruvec, WORKINGSET_ACTIVATE);
++	mod_lruvec_state(lruvec, WORKINGSET_ACTIVATE, nr);
+ 
+-	/* Page was active prior to eviction */
++	/* Folio was active prior to eviction */
+ 	if (workingset) {
+-		SetPageWorkingset(page);
+-		inc_lruvec_state(lruvec, WORKINGSET_RESTORE);
++		folio_set_workingset(folio);
++		mod_lruvec_state(lruvec, WORKINGSET_RESTORE, nr);
+ 	}
+ out:
+ 	rcu_read_unlock();
