@@ -48,5 +48,36 @@ O workflow aplica G1, G2.1 e G2.2a somente quando `enable_folios_g22=true`;
 `enable_folios_g2=true` valida apenas G1+G2.1 e `enable_folios_g1=true`
 valida apenas G1.
 
+## G2.2b
+
+`e404-folio-g2.2b.patch` adiciona, sobre o G2.2a, dois blocos do upstream
+(patches 11/90 e 12/90), de forma **aditiva**:
+
+- `folio_is_file_lru()` e `folio_lru_list()`;
+- `lruvec_add_folio()`, `lruvec_add_folio_tail()`, `lruvec_del_folio()`;
+- `__folio_clear_lru_flags()`;
+- `folio_get_private()`;
+- `folio_attach_private()`, `folio_detach_private()`;
+- `attach_page_private()`, `detach_page_private()`.
+
+Adaptações específicas do E404:
+
+- `update_lru_size()` / `__update_lru_size()` / `mem_cgroup_update_lru_size()`
+  passam de `int` para `long` em `nr_pages`, para aceitar `folio_nr_pages()`;
+- os helpers `lruvec_*` **mantêm o argumento `enum lru_list lru` explícito** do
+  E404, em vez de recalcular a lista a partir do folio. Isso é necessário para o
+  caminho de split de THP em `lru_add_page_tail()`, que opera em `page_tail` e
+  precisa de um caminho de página explícito;
+- `page_is_file_cache()`, `page_lru_base_type()`, `page_off_lru()`,
+  `page_lru()` e as variantes `*_page_*` de LRU ficam **intocadas**;
+- `include/trace/events/pagemap.h` **não é alterado**: o tracepoint
+  `mm_lru_insertion` do E404 recebe o LRU já calculado como argumento;
+- `mmzone.h` não é alterado e nenhum campo de MGLRU/`lru_gen` é adicionado.
+
+Nenhum caller é convertido neste estágio.
+
+O workflow aplica G1 -> G2.1 -> G2.2a -> G2.2a quando
+`enable_folios_g22b=true`.
+
 A base exata do patch e o commit E404
 `ca410e68b6aa31efca73bbec288ef1ed671701f6`.
