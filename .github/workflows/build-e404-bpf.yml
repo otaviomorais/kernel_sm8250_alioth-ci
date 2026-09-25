@@ -43,6 +43,11 @@ on:
         required: false
         type: boolean
         default: false
+      enable_folios_g2:
+        description: 'Integrar o G2.1 de folios (refcount/get/put/RCU; opt-in)'
+        required: false
+        type: boolean
+        default: false
       droidspaces_profile:
         description: 'Perfil DroidSpaces (full recomendado; minimal; perfis cumulativos históricos)'
         required: true
@@ -251,6 +256,14 @@ jobs:
           echo "Aplicando o shim G1 de folios; mTHP permanece desabilitado..."
           bash folio/apply-g1.sh kernel
           echo "FOLIO_SUFFIX=-folio-g1" >> "$GITHUB_ENV"
+
+      - name: Integrar folio G2.1 (refcount/get/put/RCU, opt-in)
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g2 == 'true')
+        run: |
+          set -euo pipefail
+          echo "Aplicando o G2.1 de folios sobre o G1; page cache e mTHP continuam fora..."
+          bash folio/apply-g2.sh kernel
+          echo "FOLIO_SUFFIX=-folio-g2" >> "$GITHUB_ENV"
 
       - name: Checkout KernelSU-Next legacy (UAPI 2)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false') && (inputs.ksu_stack == 'legacy-susfs2-experimental')
@@ -637,6 +650,18 @@ jobs:
           test -z "$(find kernel -type f -name '*.rej' -print -quit)"
           echo 'Folio G1 validado; mTHP continua desabilitado.'
 
+      - name: Validar folio G2.1 no kernel
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g2 == 'true')
+        run: |
+          set -euo pipefail
+          grep -q 'folio_ref_count' kernel/include/linux/page_ref.h
+          grep -q 'folio_try_get_rcu' kernel/include/linux/page_ref.h
+          grep -q 'folio_get' kernel/include/linux/mm.h
+          grep -q 'folio_put' kernel/include/linux/mm.h
+          ! grep -q 'CONFIG_MTHP' kernel/mm/Kconfig
+          test -z "$(find kernel -type f -name '*.rej' -print -quit)"
+          echo 'Folio G2.1 validado; page cache, flags e mTHP continuam fora.'
+
       - name: Compilar Kernel (Image, dtbs, dtbo.img)
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |
@@ -786,7 +811,9 @@ jobs:
           else
             MGLRU_STATUS="Desativado (baseline preservado)"
           fi
-          if [ -n "$FOLIO_SUFFIX" ]; then
+          if [ "$FOLIO_SUFFIX" = "-folio-g2" ]; then
+            FOLIO_STATUS="G2.1 ativado (refcount/get/put/RCU; page cache, flags e mTHP fora)"
+          elif [ -n "$FOLIO_SUFFIX" ]; then
             FOLIO_STATUS="G1 ativado (type shim upstream; mTHP desativado)"
           else
             FOLIO_STATUS="Desativado (baseline preservado)"
