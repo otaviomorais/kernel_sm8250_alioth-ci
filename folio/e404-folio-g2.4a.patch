@@ -1,0 +1,215 @@
+From: Codex folio backport <codex@local>
+Subject: [PATCH] E404 folio G2.4a: Add __folio_end_writeback() (upstream 66/90)
+
+test_clear_page_writeback() is an mm-internal function that was named as
+if it were a pagecache entry point.  Move its declaration from
+include/linux/page-flags.h to mm/internal.h, rename it to
+__folio_end_writeback(), take a struct folio and return bool.
+
+Divergences from upstream, all deliberate:
+
+  - folio_memcg_lock()/folio_memcg_unlock() are added here as thin wrappers
+    over lock_page_memcg()/unlock_page_memcg().  Upstream gets them from
+    patch 45/90, which belongs to the memcg_data/obj_cgroup rework; the E404
+    4.19 base stores the memcg pointer directly in page->mem_cgroup and has
+    neither obj_cgroup nor MEMCG_DATA_*, so the wrappers are all the
+    conversion needs.  Unlocking re-reads page->mem_cgroup, which is safe
+    because nothing between the lock and the unlock here changes it.
+
+  - The writeback accounting stays in whole pages.  Upstream counts
+    folio_nr_pages() and switches dec_wb_stat()/__wb_writeout_inc() and the
+    zone/node/lruvec counters over to wb_stat_mod() / __wb_writeout_add() /
+    *_stat_mod_folio().  That family comes from the vmstat rework in
+    upstream patches 50-56, which this tree does not have.  Every page in
+    this configuration is order-0, because CONFIG_TRANSPARENT_HUGEPAGE is not
+    set, so a folio is always exactly one page and the counts are unchanged.
+    The generalisation stays deferred rather than being invented here.
+
+  - E404's own shape is kept where it differs: mem_cgroup_page_lruvec() takes
+    the page and the pgdat, bdi_cap_account_writeback() replaces the
+    BDI_CAP_WRITEBACK_ACCT test, and sb_clear_inode_writeback() replaces
+    wb_inode_writeback_end().
+
+Both callers are converted: end_page_writeback() resolves page_folio(page)
+and folio_end_writeback() passes the folio straight through, which is the
+point of the patch -- PG_writeback is a PF_NO_TAIL flag, so the operation
+now always lands on the head page instead of relying on each caller to have
+normalised first.
+
+diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
+index 016f3e3..8950a21 100644
+--- a/include/linux/memcontrol.h
++++ b/include/linux/memcontrol.h
+@@ -564,6 +564,24 @@ struct mem_cgroup *lock_page_memcg(struct page *page);
+ void __unlock_page_memcg(struct mem_cgroup *memcg);
+ void unlock_page_memcg(struct page *page);
+ 
++/*
++ * Upstream patch 45/90 introduces folio_memcg_lock()/folio_memcg_unlock() as
++ * part of the memcg_data/obj_cgroup rework, which the E404 4.19 base does not
++ * have.  The memcg pointer lives directly in page->mem_cgroup here and is
++ * protected by the same move_lock, so the folio entry points are thin
++ * wrappers over the page ones.  Adding them keeps the __folio_end_writeback()
++ * conversion in upstream patch 66/90 written in its upstream shape.
++ */
++static inline void folio_memcg_lock(struct folio *folio)
++{
++	lock_page_memcg(&folio->page);
++}
++
++static inline void folio_memcg_unlock(struct folio *folio)
++{
++	unlock_page_memcg(&folio->page);
++}
++
+ /* try to stablize page_memcg() for all the pages in a memcg */
+ static inline bool mem_cgroup_trylock_pages(struct mem_cgroup *memcg)
+ {
+@@ -1020,6 +1038,14 @@ static inline void unlock_page_memcg(struct page *page)
+ {
+ }
+ 
++static inline void folio_memcg_lock(struct folio *folio)
++{
++}
++
++static inline void folio_memcg_unlock(struct folio *folio)
++{
++}
++
+ static inline bool mem_cgroup_trylock_pages(struct mem_cgroup *memcg)
+ {
+ 	/* to match page_memcg_rcu() */
+diff --git a/include/linux/page-flags.h b/include/linux/page-flags.h
+index a16946f..154861e 100644
+--- a/include/linux/page-flags.h
++++ b/include/linux/page-flags.h
+@@ -576,7 +576,6 @@ static __always_inline void SetPageUptodate(struct page *page)
+ 
+ CLEARPAGEFLAG(Uptodate, uptodate, PF_NO_TAIL)
+ 
+-int test_clear_page_writeback(struct page *page);
+ int __test_set_page_writeback(struct page *page, bool keep_write);
+ 
+ #define test_set_page_writeback(page)			\
+diff --git a/mm/filemap.c b/mm/filemap.c
+index fcbe142..de77477 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -1566,7 +1566,7 @@ void end_page_writeback(struct page *page)
+ 		rotate_reclaimable_page(page);
+ 	}
+ 
+-	if (!test_clear_page_writeback(page))
++	if (!__folio_end_writeback(page_folio(page)))
+ 		BUG();
+ 
+ 	smp_mb__after_atomic();
+@@ -1599,7 +1599,7 @@ void folio_end_writeback(struct folio *folio)
+ 	 * reused before the folio_wake().
+ 	 */
+ 	folio_get(folio);
+-	if (!test_clear_page_writeback(&folio->page))
++	if (!__folio_end_writeback(folio))
+ 		BUG();
+ 
+ 	smp_mb__after_atomic();
+diff --git a/mm/internal.h b/mm/internal.h
+index 8ed4bbc..e06feef 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -41,6 +41,14 @@ void page_writeback_init(void);
+ 
+ vm_fault_t do_swap_page(struct vm_fault *vmf);
+ 
++/*
++ * Upstream patch 66/90 moves test_clear_page_writeback() here, renaming it to
++ * __folio_end_writeback() and returning bool: it is an mm-internal function
++ * that was named as if it were a pagecache entry point.  The declaration used
++ * to live in include/linux/page-flags.h.
++ */
++bool __folio_end_writeback(struct folio *folio);
++
+ void free_pgtables(struct mmu_gather *tlb, struct vm_area_struct *start_vma,
+ 		unsigned long floor, unsigned long ceiling);
+ 
+diff --git a/mm/page-writeback.c b/mm/page-writeback.c
+index 5b5d8f6..c0b978b 100644
+--- a/mm/page-writeback.c
++++ b/mm/page-writeback.c
+@@ -590,7 +590,7 @@ static void wb_domain_writeout_inc(struct wb_domain *dom,
+ 
+ /*
+  * Increment @wb's writeout completion count and the global writeout
+- * completion count. Called from test_clear_page_writeback().
++ * completion count. Called from __folio_end_writeback().
+  */
+ static inline void __wb_writeout_inc(struct bdi_writeback *wb)
+ {
+@@ -2703,24 +2703,35 @@ int clear_page_dirty_for_io(struct page *page)
+ }
+ EXPORT_SYMBOL(clear_page_dirty_for_io);
+ 
+-int test_clear_page_writeback(struct page *page)
++/*
++ * Upstream patch 66/90 renames this to __folio_end_writeback(), takes a folio
++ * and returns bool: it is an mm-internal function that was named as if it were
++ * a pagecache entry point.
++ *
++ * The bookkeeping below stays in whole pages, as in the E404 4.19 base.  Upstream
++ * counts folio_nr_pages() here, which needs the wb_stat_mod() /
++ * lruvec_stat_mod_folio() family from the vmstat rework (upstream patches
++ * 50-56); this tree does not have it.  Every page here is order-0 anyway,
++ * because CONFIG_TRANSPARENT_HUGEPAGE is not set, so a folio is always exactly
++ * one page and the counts are unchanged.
++ */
++bool __folio_end_writeback(struct folio *folio)
+ {
+-	struct address_space *mapping = page_mapping(page);
+-	struct mem_cgroup *memcg;
++	struct address_space *mapping = folio_mapping(folio);
+ 	struct lruvec *lruvec;
+-	int ret;
++	bool ret;
+ 
+-	memcg = lock_page_memcg(page);
+-	lruvec = mem_cgroup_page_lruvec(page, page_pgdat(page));
++	folio_memcg_lock(folio);
++	lruvec = mem_cgroup_page_lruvec(&folio->page, page_pgdat(&folio->page));
+ 	if (mapping && mapping_use_writeback_tags(mapping)) {
+ 		struct inode *inode = mapping->host;
+ 		struct backing_dev_info *bdi = inode_to_bdi(inode);
+ 		unsigned long flags;
+ 
+ 		xa_lock_irqsave(&mapping->i_pages, flags);
+-		ret = TestClearPageWriteback(page);
++		ret = folio_test_clear_writeback(folio);
+ 		if (ret) {
+-			__xa_clear_mark(&mapping->i_pages, page_index(page),
++			__xa_clear_mark(&mapping->i_pages, folio_index(folio),
+ 						PAGECACHE_TAG_WRITEBACK);
+ 			if (bdi_cap_account_writeback(bdi)) {
+ 				struct bdi_writeback *wb = inode_to_wb(inode);
+@@ -2736,7 +2747,7 @@ int test_clear_page_writeback(struct page *page)
+ 
+ 		xa_unlock_irqrestore(&mapping->i_pages, flags);
+ 	} else {
+-		ret = TestClearPageWriteback(page);
++		ret = folio_test_clear_writeback(folio);
+ 	}
+ 	/*
+ 	 * NOTE: Page might be free now! Writeback doesn't hold a page
+@@ -2746,10 +2757,10 @@ int test_clear_page_writeback(struct page *page)
+ 	 */
+ 	if (ret) {
+ 		dec_lruvec_state(lruvec, NR_WRITEBACK);
+-		dec_zone_page_state(page, NR_ZONE_WRITE_PENDING);
+-		inc_node_page_state(page, NR_WRITTEN);
++		dec_zone_page_state(&folio->page, NR_ZONE_WRITE_PENDING);
++		inc_node_page_state(&folio->page, NR_WRITTEN);
+ 	}
+-	__unlock_page_memcg(memcg);
++	folio_memcg_unlock(folio);
+ 	return ret;
+ }
+ 

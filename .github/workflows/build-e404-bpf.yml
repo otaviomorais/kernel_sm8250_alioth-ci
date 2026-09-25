@@ -88,6 +88,11 @@ on:
         required: false
         type: boolean
         default: false
+      enable_folios_g24a:
+        description: 'Integrar o G2.4a de folios (__folio_end_writeback, patch 66/90; opt-in)'
+        required: false
+        type: boolean
+        default: false
       droidspaces_profile:
         description: 'Perfil DroidSpaces (full recomendado; minimal; perfis cumulativos históricos)'
         required: true
@@ -368,6 +373,14 @@ jobs:
           echo "Aplicando o G2.3f de folios (patch 29/90, wait queues por folio)..."
           bash folio/apply-g23f.sh kernel
           echo "FOLIO_SUFFIX=-folio-g23f" >> "$GITHUB_ENV"
+
+      - name: Integrar folio G2.4a (__folio_end_writeback, opt-in)
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g24a == 'true')
+        run: |
+          set -euo pipefail
+          echo "Aplicando o G2.4a de folios (patch 66/90, __folio_end_writeback)..."
+          bash folio/apply-g24a.sh kernel
+          echo "FOLIO_SUFFIX=-folio-g24a" >> "$GITHUB_ENV"
 
       - name: Checkout KernelSU-Next legacy (UAPI 2)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false') && (inputs.ksu_stack == 'legacy-susfs2-experimental')
@@ -883,6 +896,15 @@ jobs:
           test -z "$(find kernel -type f -name '*.rej' -print -quit)"
           echo 'Folio G2.3f validado; wait_page_key/wait_page_queue em folios, caminho de page intacto.'
 
+      - name: Validar folio G2.4a no kernel
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g24a == 'true')
+        run: |
+          set -euo pipefail
+          bash folio/verify-g24a.sh kernel
+
+          test -z "$(find kernel -type f -name '*.rej' -print -quit)"
+          echo 'Folio G2.4a validado; end_page_writeback() e folio_end_writeback() convergem para __folio_end_writeback().'
+
       - name: Compilar Kernel (Image, dtbs, dtbo.img)
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |
@@ -1032,7 +1054,9 @@ jobs:
           else
             MGLRU_STATUS="Desativado (baseline preservado)"
           fi
-          if [ "$FOLIO_SUFFIX" = "-folio-g23f" ]; then
+          if [ "$FOLIO_SUFFIX" = "-folio-g24a" ]; then
+            FOLIO_STATUS="G2.4a ativado (patch 66/90: __folio_end_writeback por folio; contagem por pagina mantida, sem a familia de vmstat do upstream)"
+          elif [ "$FOLIO_SUFFIX" = "-folio-g23f" ]; then
             FOLIO_STATUS="G2.3f ativado (patch 29/90: wait_page_key/wait_page_queue por folio; primeira conversao de tipo; caminho de page preservado)"
           elif [ "$FOLIO_SUFFIX" = "-folio-g23e" ]; then
             FOLIO_STATUS="G2.3e ativado (folio_wake_bit; waitqueue key ainda em struct page)"

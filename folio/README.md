@@ -48,6 +48,75 @@ O workflow aplica G1, G2.1 e G2.2a somente quando `enable_folios_g22=true`;
 `enable_folios_g2=true` valida apenas G1+G2.1 e `enable_folios_g1=true`
 valida apenas G1.
 
+## G2.4a
+
+`e404-folio-g2.4a.patch` aplica, sobre o G2.3f, o patch upstream 66/90
+(`mm/writeback: Add __folio_end_writeback()`).
+
+`test_clear_page_writeback()` é uma função interna do mm que estava nomeada
+como se fosse um ponto de entrada do page cache. Este estágio:
+
+- move a declaração de `include/linux/page-flags.h` para `mm/internal.h`;
+- renomeia para `__folio_end_writeback()`;
+- passa a receber `struct folio *` e a devolver `bool`.
+
+Os dois chamadores convergem: `end_page_writeback()` resolve
+`page_folio(page)` e `folio_end_writeback()` passa o próprio folio. Esse é o
+ponto do patch — `PG_writeback` é uma flag `PF_NO_TAIL`, então a operação agora
+sempre cai na page head em vez de depender de cada chamador ter normalizado
+antes.
+
+### `folio_memcg_lock()` / `folio_memcg_unlock()` adicionados aqui
+
+O upstream tira esses dois helpers do patch 45/90, que faz parte do
+rework de `memcg_data`/`obj_cgroup`. O E404 4.19 guarda o ponteiro de memcg
+diretamente em `page->mem_cgroup` e não tem `obj_cgroup` nem `MEMCG_DATA_*`,
+então os wrappers finos sobre `lock_page_memcg()` / `unlock_page_memcg()` são
+tudo o que a conversão precisa. Destravar relendo `page->mem_cgroup` é seguro
+porque nada entre o lock e o unlock altera esse campo.
+
+### A contagem por página fica como está, de propósito
+
+O upstream conta `folio_nr_pages()` aqui e troca
+`dec_wb_stat()` / `__wb_writeout_inc()` e os contadores de zona/nó/lruvec por
+`wb_stat_mod()` / `__wb_writeout_add()` / `*_stat_mod_folio()`. Essa família vem
+do rework de vmstat dos patches 50-56 do upstream, que esta árvore não tem.
+
+Deixei a generalização adiada em vez de inventá-la. `__fprop_add_percpu_max()`
+governa o *throttling* de bandwidth de writeback; errar ali produz stall ou
+perda de throttling, e o ganho seria zero aqui: `CONFIG_TRANSPARENT_HUGEPAGE`
+não está no config, então toda página é de ordem 0 e um folio é sempre
+exatamente uma página. As contagens ficam idênticas às do E404.
+
+### Forma do E404 preservada
+
+Onde o E404 difere do 5.16, o E404 vence: `mem_cgroup_page_lruvec()` continua
+recebendo a page e o pgdat, `bdi_cap_account_writeback()` no lugar do teste em
+`BDI_CAP_WRITEBACK_ACCT`, e `sb_clear_inode_writeback()` no lugar de
+`wb_inode_writeback_end()`.
+
+## Patches upstream deliberadamente pulados: 38-48 (memcg)
+
+O bloco de memcg do upstream (38 a 48) **não é portável** para o E404, e isso
+não é detalhe de forma: os patches convertem código que não existe aqui.
+
+| mecanismo | 5.16 (assumido pelos patches) | E404 4.19R |
+|---|---|---|
+| armazenamento do ponteiro | `page->memcg_data` | `page->mem_cgroup` (ponteiro direto) |
+| flag kmemcg | `MEMCG_DATA_KMEM` na mesma palavra | `PG_kmemcg` (bit separado) |
+| object cgroup | `obj_cgroup`, `__page_objcg()` | **não existe** (0 ocorrências) |
+| `PageMemcgKmem()` | existe | **não existe** |
+| `charge_memcg()` / `__mem_cgroup_charge()` | existem | **não existem** |
+| `mem_cgroup_charge()` | existe | **não existe**; há `mem_cgroup_try_charge()` |
+| `commit_charge()` | 2 argumentos | 3 argumentos, com `lrucare` |
+| `uncharge_gather` | tem `nid` | tem `dummy_page` |
+
+Todas as contagens acima foram medidas na árvore. Aplicar 38-43 "à mão"
+exigiria primeiro portar o esquema `memcg_data`/`obj_cgroup` do 5.7-5.16, que é
+um backport de subsystem e não de folio: altera `struct page`, mexe em dezenas
+de patches e threaten a ABI de vendor. E 47/48 dependem de `folio_memcg()`, que
+vem do 38. Então o caminho é 66 → 80 → 85-89.
+
 ## G2.3f
 
 `e404-folio-g2.3f.patch` aplica, sobre o G2.3e, o patch upstream 29/90
