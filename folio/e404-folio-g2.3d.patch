@@ -1,0 +1,173 @@
+diff --git a/include/linux/pagemap.h b/include/linux/pagemap.h
+index 6cd1af4..2b86b1f 100644
+--- a/include/linux/pagemap.h
++++ b/include/linux/pagemap.h
+@@ -714,6 +714,8 @@ static inline __sched bool folio_lock_or_retry(struct folio *folio,
+  */
+ extern void __sched wait_on_page_bit(struct page *page, int bit_nr);
+ extern int __sched wait_on_page_bit_killable(struct page *page, int bit_nr);
++void __sched folio_wait_bit(struct folio *folio, int bit_nr);
++int __sched folio_wait_bit_killable(struct folio *folio, int bit_nr);
+ 
+ /* 
+  * Wait for a page to be unlocked.
+@@ -742,14 +744,14 @@ static inline __sched int wait_on_page_locked_killable(struct page *page)
+ static inline __sched void folio_wait_locked(struct folio *folio)
+ {
+ 	if (folio_test_locked(folio))
+-		wait_on_page_bit(&folio->page, PG_locked);
++		folio_wait_bit(folio, PG_locked);
+ }
+ 
+ static inline __sched int folio_wait_locked_killable(struct folio *folio)
+ {
+ 	if (!folio_test_locked(folio))
+ 		return 0;
+-	return wait_on_page_bit_killable(&folio->page, PG_locked);
++	return folio_wait_bit_killable(folio, PG_locked);
+ }
+ 
+ extern void put_and_wait_on_page_locked(struct page *page);
+diff --git a/mm/filemap.c b/mm/filemap.c
+index 43eb7bb..c251cba 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -1225,6 +1225,118 @@ void __sched wait_on_page_bit(struct page *page, int bit_nr)
+ }
+ EXPORT_SYMBOL(wait_on_page_bit);
+ 
++/*
++ * Folio counterpart of wait_on_page_bit_common() above.
++ *
++ * This is a direct translation of the E404 page version, NOT the more
++ * elaborate upstream 5.16 algorithm (which gained trylock_page_bit_common()
++ * and a repeat: label in a later development cycle).  Keeping the E404
++ * shape means the folio path inherits exactly the same wakeup, delayacct
++ * and PSI behaviour as the page path it is meant to replace.
++ */
++static inline __sched int folio_wait_bit_common(struct folio *folio, int bit_nr,
++		int state, enum behavior behavior)
++{
++	wait_queue_head_t *q = page_waitqueue(&folio->page);
++	struct wait_page_queue wait_page;
++	wait_queue_entry_t *wait = &wait_page.wait;
++	bool bit_is_set;
++	bool thrashing = false;
++	bool delayacct = false;
++	unsigned long pflags;
++	int ret = 0;
++
++	if (bit_nr == PG_locked &&
++	    !folio_test_uptodate(folio) && folio_test_workingset(folio)) {
++		if (!folio_test_swapbacked(folio)) {
++			delayacct_thrashing_start();
++			delayacct = true;
++		}
++		psi_memstall_enter(&pflags);
++		thrashing = true;
++	}
++
++	init_wait(wait);
++	wait->flags = behavior == EXCLUSIVE ? WQ_FLAG_EXCLUSIVE : 0;
++	wait->func = wake_page_function;
++	wait_page.page = &folio->page;
++	wait_page.bit_nr = bit_nr;
++
++	for (;;) {
++		spin_lock_irq(&q->lock);
++
++		if (likely(list_empty(&wait->entry))) {
++			__add_wait_queue_entry_tail(q, wait);
++			folio_set_waiters(folio);
++		}
++
++		set_current_state(state);
++
++		spin_unlock_irq(&q->lock);
++
++		bit_is_set = test_bit(bit_nr, folio_flags(folio, 0));
++		if (behavior == DROP)
++			folio_put(folio);
++
++		if (likely(bit_is_set))
++			io_schedule();
++
++		if (behavior == EXCLUSIVE) {
++			if (!test_and_set_bit_lock(bit_nr, folio_flags(folio, 0)))
++				break;
++		} else if (behavior == SHARED) {
++			if (!test_bit(bit_nr, folio_flags(folio, 0)))
++				break;
++		}
++
++		if (unlikely(signal_pending_state(state, current))) {
++			ret = -EINTR;
++			break;
++		}
++
++		if (behavior == DROP) {
++			/*
++			 * We can no longer safely access folio->flags:
++			 * even if CONFIG_MEMORY_HOTREMOVE is not enabled,
++			 * there is a risk of waiting forever on a folio reused
++			 * for something that keeps it locked indefinitely.
++			 * But best check for -EINTR above before breaking.
++			 */
++			break;
++		}
++	}
++
++	finish_wait(q, wait);
++
++	if (thrashing) {
++		if (delayacct)
++			delayacct_thrashing_end();
++		psi_memstall_leave(&pflags);
++	}
++
++	/*
++	 * A signal could leave the waiters bit set.  Clearing it here if
++	 * !waitqueue_active would be possible (by open-coding finish_wait),
++	 * but still fail to catch it in the case of wait hash collision. We
++	 * already can fail to clear wait hash collision cases, so don't
++	 * bother with signals either.
++	 */
++
++	return ret;
++}
++
++void __sched folio_wait_bit(struct folio *folio, int bit_nr)
++{
++	folio_wait_bit_common(folio, bit_nr, TASK_UNINTERRUPTIBLE, SHARED);
++}
++EXPORT_SYMBOL(folio_wait_bit);
++
++int __sched folio_wait_bit_killable(struct folio *folio, int bit_nr)
++{
++	return folio_wait_bit_common(folio, bit_nr, TASK_KILLABLE, SHARED);
++}
++EXPORT_SYMBOL(folio_wait_bit_killable);
++
+ int __sched wait_on_page_bit_killable(struct page *page, int bit_nr)
+ {
+ 	wait_queue_head_t *q = page_waitqueue(page);
+@@ -1445,8 +1557,7 @@ EXPORT_SYMBOL(__lock_page);
+  */
+ void __sched __folio_lock(struct folio *folio)
+ {
+-	wait_queue_head_t *q = page_waitqueue(&folio->page);
+-	wait_on_page_bit_common(q, &folio->page, PG_locked, TASK_UNINTERRUPTIBLE,
++	folio_wait_bit_common(folio, PG_locked, TASK_UNINTERRUPTIBLE,
+ 				EXCLUSIVE);
+ }
+ EXPORT_SYMBOL(__folio_lock);
+@@ -1462,8 +1573,7 @@ EXPORT_SYMBOL_GPL(__lock_page_killable);
+ 
+ int __sched __folio_lock_killable(struct folio *folio)
+ {
+-	wait_queue_head_t *q = page_waitqueue(&folio->page);
+-	return wait_on_page_bit_common(q, &folio->page, PG_locked, TASK_KILLABLE,
++	return folio_wait_bit_common(folio, PG_locked, TASK_KILLABLE,
+ 					EXCLUSIVE);
+ }
+ EXPORT_SYMBOL_GPL(__folio_lock_killable);

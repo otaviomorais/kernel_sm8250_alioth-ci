@@ -48,6 +48,32 @@ O workflow aplica G1, G2.1 e G2.2a somente quando `enable_folios_g22=true`;
 `enable_folios_g2=true` valida apenas G1+G2.1 e `enable_folios_g1=true`
 valida apenas G1.
 
+## G2.3d
+
+`e404-folio-g2.3d.patch` adiciona, sobre o G2.3c, o patch upstream 27/90:
+
+- `folio_wait_bit_common()` (static) em `mm/filemap.c`;
+- `folio_wait_bit()` e `folio_wait_bit_killable()` em `mm/filemap.c`;
+- prototipo em `include/linux/pagemap.h`.
+
+Adaptação importante do E404: o upstream 5.16 reescreveu
+`wait_on_page_bit_common()` com `trylock_page_bit_common()` e um `repeat:`
+label. O E404 4.19 tem a versao mais simples (loop `for (;;)` com
+`__add_wait_queue_entry_tail()` + `SetPageWaiters()`). Aqui a variante de folio
+e uma **traducao direta da versao do E404**, e nao uma traducao do 5.16, para
+que o caminho de folio herde exatamente o mesmo comportamento de wakeup,
+delayacct e PSI que o caminho de pagina que ele substitui. Importar o
+algoritmo do 5.16 teria trocado a semantica de espera sem nenhum erro de
+compilacao.
+
+Como efeito colateral, `__folio_lock()` e `__folio_lock_killable()` (adicionados
+no G2.3b) passam a usar `folio_wait_bit_common()`, que e o que o upstream faz
+neste patch. Ambas as funcoes ainda nao tem callers, logo isso nao muda
+comportamento.
+
+`wait_on_page_bit()`, `wait_on_page_bit_killable()` e
+`wait_on_page_bit_common()` ficam **intactos**.
+
 ## G2.3c
 
 `e404-folio-g2.3c.patch` adiciona, sobre o G2.3b, os patches upstream 23/90 e

@@ -73,6 +73,11 @@ on:
         required: false
         type: boolean
         default: false
+      enable_folios_g23d:
+        description: 'Integrar o G2.3d de folios (folio_wait_bit API; opt-in)'
+        required: false
+        type: boolean
+        default: false
       droidspaces_profile:
         description: 'Perfil DroidSpaces (full recomendado; minimal; perfis cumulativos históricos)'
         required: true
@@ -329,6 +334,14 @@ jobs:
           echo "Aplicando o G2.3c de folios (folio_end_writeback/rotate_reclaimable)..."
           bash folio/apply-g23c.sh kernel
           echo "FOLIO_SUFFIX=-folio-g23c" >> "$GITHUB_ENV"
+
+      - name: Integrar folio G2.3d (folio_wait_bit API, opt-in)
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23d == 'true')
+        run: |
+          set -euo pipefail
+          echo "Aplicando o G2.3d de folios (folio_wait_bit)..."
+          bash folio/apply-g23d.sh kernel
+          echo "FOLIO_SUFFIX=-folio-g23d" >> "$GITHUB_ENV"
 
       - name: Checkout KernelSU-Next legacy (UAPI 2)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false') && (inputs.ksu_stack == 'legacy-susfs2-experimental')
@@ -810,6 +823,21 @@ jobs:
           test -z "$(find kernel -type f -name '*.rej' -print -quit)"
           echo 'Folio G2.3c validado; caminhos de pagina intactos.'
 
+      - name: Validar folio G2.3d no kernel
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23d == 'true')
+        run: |
+          set -euo pipefail
+          F=kernel/mm/filemap.c
+          grep -q 'static inline __sched int folio_wait_bit_common' "$F"
+          grep -q 'void __sched folio_wait_bit' "$F"
+          grep -q 'int __sched folio_wait_bit_killable' "$F"
+          grep -q 'folio_wait_bit' kernel/include/linux/pagemap.h
+          grep -q 'static inline __sched int wait_on_page_bit_common' "$F"
+          grep -q 'void __sched wait_on_page_bit' "$F"
+          grep -q 'int __sched wait_on_page_bit_killable' "$F"
+          test -z "$(find kernel -type f -name '*.rej' -print -quit)"
+          echo 'Folio G2.3d validado; wait_on_page_bit() intacto.'
+
       - name: Compilar Kernel (Image, dtbs, dtbo.img)
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |
@@ -959,7 +987,9 @@ jobs:
           else
             MGLRU_STATUS="Desativado (baseline preservado)"
           fi
-          if [ "$FOLIO_SUFFIX" = "-folio-g23c" ]; then
+          if [ "$FOLIO_SUFFIX" = "-folio-g23d" ]; then
+            FOLIO_STATUS="G2.3d ativado (folio_wait_bit API; wait_on_page_bit intacto)"
+          elif [ "$FOLIO_SUFFIX" = "-folio-g23c" ]; then
             FOLIO_STATUS="G2.3c ativado (folio_end_writeback + folio_rotate_reclaimable; caminho de pagina intacto)"
           elif [ "$FOLIO_SUFFIX" = "-folio-g23b" ]; then
             FOLIO_STATUS="G2.3b ativado (API de lock de folio; caminho de pagina intacto)"
