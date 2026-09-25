@@ -1,0 +1,192 @@
+diff --git a/include/linux/pagemap.h b/include/linux/pagemap.h
+index 8f77502..a4fcad2 100644
+--- a/include/linux/pagemap.h
++++ b/include/linux/pagemap.h
+@@ -629,6 +629,17 @@ extern int __sched __lock_page_or_retry(struct page *page, struct mm_struct *mm,
+ 				unsigned int flags);
+ extern void unlock_page(struct page *page);
+ 
++void __sched __folio_lock(struct folio *folio);
++int __sched __folio_lock_killable(struct folio *folio);
++bool __sched __folio_lock_or_retry(struct folio *folio, struct mm_struct *mm,
++				unsigned int flags);
++void folio_unlock(struct folio *folio);
++
++static inline bool folio_trylock(struct folio *folio)
++{
++	return likely(!test_and_set_bit_lock(PG_locked, folio_flags(folio, 0)));
++}
++
+ static inline int trylock_page(struct page *page)
+ {
+ 	page = compound_head(page);
+@@ -645,6 +656,13 @@ static inline __sched void lock_page(struct page *page)
+ 		__lock_page(page);
+ }
+ 
++static inline __sched void folio_lock(struct folio *folio)
++{
++	might_sleep();
++	if (!folio_trylock(folio))
++		__folio_lock(folio);
++}
++
+ /*
+  * lock_page_killable is like lock_page but can be interrupted by fatal
+  * signals.  It returns 0 if it locked the page and -EINTR if it was
+@@ -658,6 +676,14 @@ static inline __sched int lock_page_killable(struct page *page)
+ 	return 0;
+ }
+ 
++static inline __sched int folio_lock_killable(struct folio *folio)
++{
++	might_sleep();
++	if (!folio_trylock(folio))
++		return __folio_lock_killable(folio);
++	return 0;
++}
++
+ /*
+  * lock_page_or_retry - Lock the page, unless this would block and the
+  * caller indicated that it can handle a retry.
+@@ -673,6 +699,15 @@ static inline __sched int lock_page_or_retry(struct page *page,
+ 	return trylock_page(page) || __lock_page_or_retry(page, mm, flags);
+ }
+ 
++static inline __sched bool folio_lock_or_retry(struct folio *folio,
++					struct mm_struct *mm,
++					unsigned int flags)
++{
++	might_sleep();
++	return folio_trylock(folio) ||
++		__folio_lock_or_retry(folio, mm, flags);
++}
++
+ /*
+  * This is exported only for wait_on_page_locked/wait_on_page_writeback, etc.,
+  * and should not be used directly.
+@@ -700,6 +735,23 @@ static inline __sched int wait_on_page_locked_killable(struct page *page)
+ 	return wait_on_page_bit_killable(compound_head(page), PG_locked);
+ }
+ 
++/*
++ * Folio counterparts of the waiters above.  The caller must be "holding"
++ * the folio (ie with an increased refcount) so it cannot go away.
++ */
++static inline __sched void folio_wait_locked(struct folio *folio)
++{
++	if (folio_test_locked(folio))
++		wait_on_page_bit(&folio->page, PG_locked);
++}
++
++static inline __sched int folio_wait_locked_killable(struct folio *folio)
++{
++	if (!folio_test_locked(folio))
++		return 0;
++	return wait_on_page_bit_killable(&folio->page, PG_locked);
++}
++
+ extern void put_and_wait_on_page_locked(struct page *page);
+ 
+ /* 
+diff --git a/mm/filemap.c b/mm/filemap.c
+index 220bd82..4e65c31 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -1311,6 +1311,26 @@ void unlock_page(struct page *page)
+ }
+ EXPORT_SYMBOL(unlock_page);
+ 
++/**
++ * folio_unlock - Unlock a locked folio.
++ * @folio: The folio.
++ *
++ * Unlocks the folio and wakes up any thread sleeping on the page lock.
++ *
++ * Context: May be called from interrupt or process context.  May not be
++ * called from NMI context.
++ */
++void folio_unlock(struct folio *folio)
++{
++	/* Bit 7 allows x86 to check the byte's sign bit */
++	BUILD_BUG_ON(PG_waiters != 7);
++	BUILD_BUG_ON(PG_locked > 7);
++	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
++	if (clear_bit_unlock_is_negative_byte(PG_locked, folio_flags(folio, 0)))
++		wake_up_page_bit(&folio->page, PG_locked);
++}
++EXPORT_SYMBOL(folio_unlock);
++
+ /**
+  * end_page_writeback - end writeback against a page
+  * @page: the page
+@@ -1378,6 +1398,18 @@ void __sched __lock_page(struct page *__page)
+ }
+ EXPORT_SYMBOL(__lock_page);
+ 
++/**
++ * __folio_lock - Get a lock on the folio, assuming we need to sleep to get it.
++ * @folio: The folio to lock
++ */
++void __sched __folio_lock(struct folio *folio)
++{
++	wait_queue_head_t *q = page_waitqueue(&folio->page);
++	wait_on_page_bit_common(q, &folio->page, PG_locked, TASK_UNINTERRUPTIBLE,
++				EXCLUSIVE);
++}
++EXPORT_SYMBOL(__folio_lock);
++
+ int __sched __lock_page_killable(struct page *__page)
+ {
+ 	struct page *page = compound_head(__page);
+@@ -1387,6 +1419,50 @@ int __sched __lock_page_killable(struct page *__page)
+ }
+ EXPORT_SYMBOL_GPL(__lock_page_killable);
+ 
++int __sched __folio_lock_killable(struct folio *folio)
++{
++	wait_queue_head_t *q = page_waitqueue(&folio->page);
++	return wait_on_page_bit_common(q, &folio->page, PG_locked, TASK_KILLABLE,
++					EXCLUSIVE);
++}
++EXPORT_SYMBOL_GPL(__folio_lock_killable);
++
++/*
++ * Folio counterpart of __lock_page_or_retry().  See the comment above
++ * __lock_page_or_retry() for the return value and mmap_sem implications.
++ */
++bool __sched __folio_lock_or_retry(struct folio *folio, struct mm_struct *mm,
++				  unsigned int flags)
++{
++	if (fault_flag_allow_retry_first(flags)) {
++		/*
++		 * CAUTION! In this case, mmap_sem is not released
++		 * even though return 0.
++		 */
++		if (flags & FAULT_FLAG_RETRY_NOWAIT)
++			return false;
++
++		up_read(&mm->mmap_sem);
++		if (flags & FAULT_FLAG_KILLABLE)
++			folio_wait_locked_killable(folio);
++		else
++			folio_wait_locked(folio);
++		return false;
++	} else {
++		if (flags & FAULT_FLAG_KILLABLE) {
++			int ret;
++
++			ret = __folio_lock_killable(folio);
++			if (ret) {
++				up_read(&mm->mmap_sem);
++				return false;
++			}
++		} else
++			__folio_lock(folio);
++	}
++	return true;
++}
++
+ /*
+  * Return values:
+  * 1 - page is locked; mmap_sem is still held.

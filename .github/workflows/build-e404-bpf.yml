@@ -63,6 +63,11 @@ on:
         required: false
         type: boolean
         default: false
+      enable_folios_g23b:
+        description: 'Integrar o G2.3b de folios (API de lock de folio; opt-in)'
+        required: false
+        type: boolean
+        default: false
       droidspaces_profile:
         description: 'Perfil DroidSpaces (full recomendado; minimal; perfis cumulativos históricos)'
         required: true
@@ -303,6 +308,14 @@ jobs:
           echo "Aplicando o G2.3a de folios (API de page cache)..."
           bash folio/apply-g23a.sh kernel
           echo "FOLIO_SUFFIX=-folio-g23a" >> "$GITHUB_ENV"
+
+      - name: Integrar folio G2.3b (page lock API, opt-in)
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23b == 'true')
+        run: |
+          set -euo pipefail
+          echo "Aplicando o G2.3b de folios (API de lock de folio)..."
+          bash folio/apply-g23b.sh kernel
+          echo "FOLIO_SUFFIX=-folio-g23b" >> "$GITHUB_ENV"
 
       - name: Checkout KernelSU-Next legacy (UAPI 2)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false') && (inputs.ksu_stack == 'legacy-susfs2-experimental')
@@ -750,6 +763,26 @@ jobs:
           test -z "$(find kernel -type f -name '*.rej' -print -quit)"
           echo 'Folio G2.3a validado; page_mapping() e __page_file_mapping() intactos.'
 
+      - name: Validar folio G2.3b no kernel
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23b == 'true')
+        run: |
+          set -euo pipefail
+          P=kernel/include/linux/pagemap.h
+          F=kernel/mm/filemap.c
+          for sym in __folio_lock __folio_lock_killable __folio_lock_or_retry \
+                     folio_unlock folio_trylock folio_lock folio_lock_killable \
+                     folio_lock_or_retry folio_wait_locked folio_wait_locked_killable; do
+            grep -q "$sym" "$P" || { echo "FATAL: falta $sym"; exit 1; }
+          done
+          for sym in folio_unlock __folio_lock __folio_lock_killable __folio_lock_or_retry; do
+            grep -q "$sym" "$F" || { echo "FATAL: falta $sym em filemap.c"; exit 1; }
+          done
+          for sym in __lock_page __lock_page_killable __lock_page_or_retry unlock_page; do
+            grep -q "$sym" "$P" || { echo "FATAL: $sym de pagina sumiu"; exit 1; }
+          done
+          test -z "$(find kernel -type f -name '*.rej' -print -quit)"
+          echo 'Folio G2.3b validado; caminho de lock de pagina intacto.'
+
       - name: Compilar Kernel (Image, dtbs, dtbo.img)
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |
@@ -899,7 +932,9 @@ jobs:
           else
             MGLRU_STATUS="Desativado (baseline preservado)"
           fi
-          if [ "$FOLIO_SUFFIX" = "-folio-g23a" ]; then
+          if [ "$FOLIO_SUFFIX" = "-folio-g23b" ]; then
+            FOLIO_STATUS="G2.3b ativado (API de lock de folio; caminho de pagina intacto)"
+          elif [ "$FOLIO_SUFFIX" = "-folio-g23a" ]; then
             FOLIO_STATUS="G2.3a ativado (API de page cache: index/pos/mapping; sem conversao de callers)"
           elif [ "$FOLIO_SUFFIX" = "-folio-g22b" ]; then
             FOLIO_STATUS="G2.2b ativado (LRU classic + private data; sem conversao de callers)"

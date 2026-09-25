@@ -48,6 +48,33 @@ O workflow aplica G1, G2.1 e G2.2a somente quando `enable_folios_g22=true`;
 `enable_folios_g2=true` valida apenas G1+G2.1 e `enable_folios_g1=true`
 valida apenas G1.
 
+## G2.3b
+
+`e404-folio-g2.3b.patch` adiciona, sobre o G2.3a, a API de lock de folio
+re-derivada dos patches upstream 17/90 a 22/90:
+
+- em `mm/filemap.c`: `folio_unlock()`, `__folio_lock()`,
+  `__folio_lock_killable()`, `__folio_lock_or_retry()`;
+- em `include/linux/pagemap.h`: os prototipos correspondentes e os helpers
+  inline `folio_trylock()`, `folio_lock()`, `folio_lock_killable()`,
+  `folio_lock_or_retry()`, `folio_wait_locked()` e
+  `folio_wait_locked_killable()`.
+
+Adaptações ao E404, de novo aditivas:
+
+- `__lock_page()`, `__lock_page_killable()`, `__lock_page_or_retry()` e
+  `unlock_page()` ficam **intactos** em `mm/filemap.c`; as variantes `folio_*`
+  sao funções novas ao lado delas;
+- `mm/folio-compat.c` continua não sendo criado, então `mm/Makefile` fica
+  intocado;
+- o patch upstream 20/90 (`__folio_lock_async()`) é **omitido**: o E404 4.19
+  nao possui `__lock_page_async()` nem `lock_page_async()` em
+  `include/linux/pagemap.h`, portanto nao ha maquinery de lock assincrono
+  para derivar a variante de folio.
+
+Nenhum caller e convertido. Esta e a ultima camada puramente aditiva antes da
+conversao real de `mm/filemap.c`.
+
 ## G2.3a
 
 `e404-folio-g2.3a.patch` adiciona, sobre o G2.2b, a API de page cache
