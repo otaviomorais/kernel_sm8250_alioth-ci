@@ -5,7 +5,7 @@ E404 4.19.404R.
 
 A patch consolidada foi gerada contra o commit E404
 `ca410e68b6aa31efca73bbec288ef1ed671701f6` e inclui a serie AOSPA completa,
-从 a partir de `3904c29400c6` (groundwork) até `f0125de52729`, incluindo:
+a partir de `3904c29400c6` (groundwork) até `f0125de52729`, incluindo:
 
 - estruturas MGLRU e bits de page flags;
 - reclaim, aging, memcg, page-table walks, sysfs/debugfs e `min_ttl`;
