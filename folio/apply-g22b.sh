@@ -31,7 +31,6 @@ grep -q '__folio_clear_lru_flags' "$KERNEL_DIR/include/linux/mm_inline.h"
 grep -q 'folio_get_private' "$KERNEL_DIR/include/linux/mm.h"
 grep -q 'folio_attach_private' "$KERNEL_DIR/include/linux/pagemap.h"
 grep -q 'folio_detach_private' "$KERNEL_DIR/include/linux/pagemap.h"
-grep -q 'attach_page_private' "$KERNEL_DIR/include/linux/pagemap.h"
 ! grep -q 'CONFIG_MTHP' "$KERNEL_DIR/mm/Kconfig"
 
 echo "Folio G2.2b integrado; LRU classic e private data sem conversao de callers."

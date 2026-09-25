@@ -183,10 +183,10 @@ index 482ab77..b3b4751 100644
 +
  #endif
 diff --git a/include/linux/pagemap.h b/include/linux/pagemap.h
-index d1618c3..5f6f0b7 100644
+index d1618c3..659ecf1 100644
 --- a/include/linux/pagemap.h
 +++ b/include/linux/pagemap.h
-@@ -223,6 +223,66 @@ static inline int page_cache_add_speculative(struct page *page, int count)
+@@ -223,6 +223,53 @@ static inline int page_cache_add_speculative(struct page *page, int count)
  	return 1;
  }
  
@@ -227,28 +227,15 @@ index d1618c3..5f6f0b7 100644
 +	return data;
 +}
 +
-+/**
-+ * attach_page_private - Attach private data to a page.
-+ * @page: Page to attach data to.
-+ * @data: Data to attach to page.
-+ *
-+ * May only be called on a head page; the wrapper resolves the folio.
++/*
++ * NOTE: attach_page_private() / detach_page_private() are deliberately NOT
++ * added here.  E404 does not have generic versions in pagemap.h, and
++ * fs/f2fs/f2fs.h defines its own static inline copies with the same
++ * signatures -- adding generic ones here would be a redefinition error.
++ * The folio_* variants above are the new API for this stage.  Promoting the
++ * page wrappers to pagemap.h (and dropping the f2fs copies) belongs to a
++ * later stage, together with the f2fs caller conversion.
 + */
-+static inline void attach_page_private(struct page *page, void *data)
-+{
-+	folio_attach_private(page_folio(page), data);
-+}
-+
-+/**
-+ * detach_page_private - Detach private data from a page.
-+ * @page: Page to detach data from.
-+ *
-+ * Return: Data that was attached to the page.
-+ */
-+static inline void *detach_page_private(struct page *page)
-+{
-+	return folio_detach_private(page_folio(page));
-+}
 +
  #ifdef CONFIG_NUMA
  extern struct page *__page_cache_alloc(gfp_t gfp);

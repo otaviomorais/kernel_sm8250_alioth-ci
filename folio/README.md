@@ -57,8 +57,15 @@ valida apenas G1.
 - `lruvec_add_folio()`, `lruvec_add_folio_tail()`, `lruvec_del_folio()`;
 - `__folio_clear_lru_flags()`;
 - `folio_get_private()`;
-- `folio_attach_private()`, `folio_detach_private()`;
-- `attach_page_private()`, `detach_page_private()`.
+- `folio_attach_private()`, `folio_detach_private()`.
+
+Carve-out importante: `attach_page_private()` / `detach_page_private()`
+**nao** sao adicionados ao `pagemap.h` neste estagio. O E404 nao tem versoes
+genericas nelem, e `fs/f2fs/f2fs.h` define copias proprias com as mesmas
+assinaturas — adicionar as genericas causaria erro de redefinition. As
+variantes `folio_*` acima sao a API nova deste estagio. Promover os wrappers
+de pagina para o `pagemap.h` (e remover as copias do f2fs) pertence a um
+estagio posterior, junto com a conversao dos callers do f2fs.
 
 Adaptações específicas do E404:
 
