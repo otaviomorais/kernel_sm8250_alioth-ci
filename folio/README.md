@@ -48,6 +48,52 @@ O workflow aplica G1, G2.1 e G2.2a somente quando `enable_folios_g22=true`;
 `enable_folios_g2=true` valida apenas G1+G2.1 e `enable_folios_g1=true`
 valida apenas G1.
 
+## G2.5b
+
+`e404-folio-g2.5b.patch` aplica, sobre o G2.5a, os patches upstream 83/90
+(`mm/swap: Add folio_add_lru`) e 86/90 (`mm/filemap: Add filemap_add_folio`).
+Eles vão juntos porque o 86 chama `folio_add_lru()`.
+
+`__add_to_page_cache_locked()` vira `__filemap_add_folio()`, e
+`add_to_page_cache_lru()` vira `filemap_add_folio()`. Os dois pontos de entrada
+antigos sobrevivem como wrappers finos, então os **sete** callers in-tree
+(três em `mm/filemap.c`, quatro em `fs/cachefiles/rdwr.c`) continuam compilando
+sem mudança.
+
+### Divergências
+
+- `__filemap_add_folio()` continua `static`. O upstream exporta e só remove o
+  `ALLOW_ERROR_INJECTION()` e o `BTF_ID()` em `kernel/bpf/verifier.c` porque
+  error injection e BTF precisam do símbolo visível. O E404 não tem nenhum dos
+  dois nessa função, então exportar seria ruído.
+- O charge de memcg mantém o protocolo de três fases do E404, tomando a page
+  head: `mem_cgroup_try_charge()` → `mem_cgroup_commit_charge()`, ou
+  `mem_cgroup_cancel_charge()` no caminho de erro. O upstream chama
+  `mem_cgroup_charge()` e `mem_cgroup_uncharge()` aqui, e **nenhuma das duas
+  existe** no E404 4.19 — é o rework de `memcg_data`/`obj_cgroup` dos patches
+  38-43, que não é portável.
+- `__inc_node_page_state()` foi mantido, não `__lruvec_stat_add_folio()`. O E404
+  contabiliza `NR_FILE_PAGES` por nó, e os helpers de stat de lruvec vêm do
+  rework de vmstat dos patches 50-56.
+- Os hunks de split do xarray foram descartados: precisam de `xa_get_order()`,
+  `xas_split_alloc()` e `xas_split()`, nenhum dos quais existe no E404. Vieram
+  junto com o suporte a xarray multipage, que faz parte do mesmo rework de
+  memcg.
+- O xarray ainda guarda ponteiro de page, então `xas_store()` recebe
+  `&folio->page` em vez do folio. Os endereços são idênticos, mas nomear a page
+  é honesto sobre o que o xarray guarda nesta árvore.
+- `folio_add_lru()` chama o `__lru_cache_add(&folio->page)` do MGLRU em vez de
+  inlineizar o corpo com `pagevec_add_and_need_flush()`, que não existe no
+  E404. O MGLRU já tinha dividido `lru_cache_add()` exatamente nessa forma,
+  então a versão de folio reaproveita aquele corpo sem alteração.
+- Os wrappers de compatibilidade ficam inline em `mm/filemap.c`, `mm/swap.c` e
+  `include/linux/pagemap.h` em vez de irem para `mm/folio-compat.c`, que esta
+  árvore não tem. É a mesma escolha feita com `add_page_wait_queue()` no G2.3f.
+- A assert de alinhamento natural do upstream foi adicionada como ele escreve.
+  Em ordem 0, que é todo folio nesta configuração, `folio_nr_pages()` é 1, então
+  `index & (1 - 1)` é 0 e ela nunca pode disparar; só fica viva se algum caller
+  passar ordem > 1.
+
 ## G2.5a
 
 `e404-folio-g2.5a.patch` aplica, sobre o G2.4b, os patches upstream 84/90
