@@ -48,6 +48,68 @@ O workflow aplica G1, G2.1 e G2.2a somente quando `enable_folios_g22=true`;
 `enable_folios_g2=true` valida apenas G1+G2.1 e `enable_folios_g1=true`
 valida apenas G1.
 
+## G2.5a
+
+`e404-folio-g2.5a.patch` aplica, sobre o G2.4b, os patches upstream 84/90
+(`mm/page_alloc: Add folio allocation functions`) e 85/90
+(`mm/filemap: Add filemap_alloc_folio`). Eles não podem ser separados: o 85
+chama `folio_alloc()` e `__folio_alloc_node()`, que o 84 introduz.
+
+Adiciona quatro pontos de entrada, como wrappers finos sobre o alocador de
+pages **intocado**:
+
+| função | onde |
+|---|---|
+| `__folio_alloc()` | `mm/page_alloc.c` |
+| `__folio_alloc_node()` | `include/linux/gfp.h` |
+| `folio_alloc()` | `mm/mempolicy.c` (NUMA) / `gfp.h` (resto) |
+| `filemap_alloc_folio()` | `mm/filemap.c` (NUMA) / `pagemap.h` (resto) |
+
+`__page_cache_alloc()` vira um `static inline` que delega para
+`filemap_alloc_folio(gfp, 0)`, então o page cache mantém o ponto de entrada que
+já tinha enquanto os filesystems podem ser convertidos no ritmo que quiser.
+
+### `__GFP_COMP` em ordem 0 é um no-op — verificado
+
+Os wrappers somam `__GFP_COMP` na máscara de gfp, que é o que faz o buddy
+allocator preparar uma page composta. Para o page cache a ordem é sempre 0, e
+nesse caso a flag não faz nada:
+
+- `mm/page_alloc.c:prep_new_page()` guarda a chamada com
+  `if (order && (gfp_flags & __GFP_COMP))`, então ordem 0 nunca chega em
+  `prep_compound_page()`;
+- `___GFP_COMP` é `0x4000`, que não colide com nenhum dos bits de seleção de
+  zona (`___GFP_DMA` 0x01, `___GFP_HIGHMEM` 0x02, `___GFP_DMA32` 0x04,
+  `___GFP_MOVABLE` 0x08) usados para derivar `zone_idx` e o migratetype.
+
+Ou seja: o caminho quente de alocação de page cache fica bit a bit igual. A
+flag só passa a importar se algum caller pedir ordem > 1.
+
+`prep_transhuge_page()` é chamada como o upstream faz. Com
+`CONFIG_TRANSPARENT_HUGEPAGE` desligado — e está, neste build — ela é um
+`static inline` vazio em `include/linux/huge_mm.h`, então a chamada some na
+compilação.
+
+### Divergências do upstream
+
+- `__folio_alloc()` chama `__alloc_pages_nodemask()`, não `__alloc_pages()`. O
+  E404 divide o alocador de outro jeito: `__alloc_pages_nodemask()` é a função
+  real em `mm/page_alloc.c` e `__alloc_pages()` é um inline de três argumentos
+  ao redor dela. A forma de `__alloc_pages()` do 5.16, que recebe o nodemask,
+  não existe aqui.
+- `folio_alloc()` fica ao lado de `alloc_pages_current()`, não de
+  `alloc_pages()`. No `gfp.h` do E404, `alloc_pages()` é um inline que chama
+  `alloc_pages_current()`; não há `alloc_pages()` em `mempolicy.c` para pendurar
+  a função nova.
+- A checagem de validade do node é repetida em `__folio_alloc_node()` em vez de
+  compartilhada com `__alloc_pages_node()`. O upstream também repete, porque lá
+  o `__alloc_pages()` não tem checagem para delegar.
+- `EXPORT_SYMBOL(__page_cache_alloc)` sai, entra
+  `EXPORT_SYMBOL(filemap_alloc_folio)`. `__page_cache_alloc()` sobrevive como
+  `static inline` no `pagemap.h`, então os dois callers in-tree
+  (`mm/filemap.c` e `fs/cachefiles/rdwr.c`) continuam funcionando sem mudança.
+  O upstream faz exatamente o mesmo.
+
 ## G2.4b
 
 `e404-folio-g2.4b.patch` aplica, sobre o G2.4a, o patch upstream 80/90

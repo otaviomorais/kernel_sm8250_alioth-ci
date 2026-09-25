@@ -1,0 +1,244 @@
+From: Codex folio backport <codex@local>
+Subject: [PATCH] E404 folio G2.5a: folio allocation entry points and filemap_alloc_folio()
+
+Upstream patches 84/90 (mm/page_alloc: Add folio allocation functions) and
+85/90 (mm/filemap: Add filemap_alloc_folio), which cannot be separated: 85
+calls folio_alloc() and __folio_alloc_node() that 84 introduces.
+
+Adds, as thin wrappers over the untouched page allocator:
+
+  __folio_alloc()          in mm/page_alloc.c
+  __folio_alloc_node()     in include/linux/gfp.h
+  folio_alloc()            in mm/mempolicy.c (CONFIG_NUMA) / gfp.h otherwise
+  filemap_alloc_folio()    in mm/filemap.c (CONFIG_NUMA) / pagemap.h otherwise
+
+__page_cache_alloc() becomes a static inline wrapper over
+filemap_alloc_folio(gfp, 0), so the page cache keeps its existing entry point
+while filesystems can be converted at leisure.
+
+Divergences from upstream, all deliberate:
+
+  - __folio_alloc() calls __alloc_pages_nodemask(), not __alloc_pages().
+    E404 splits the allocator differently: __alloc_pages_nodemask() is the
+    real function in mm/page_alloc.c and __alloc_pages() is a three-argument
+    inline wrapper around it.  The 5.16 form of __alloc_pages() takes the
+    nodemask itself and does not exist here, so the E404 shape is used.
+
+  - folio_alloc() sits next to alloc_pages_current(), not alloc_pages().
+    E404's gfp.h defines alloc_pages() as an inline that calls
+    alloc_pages_current(); there is no alloc_pages() definition in
+    mempolicy.c to hang it off.
+
+  - The node validity checks are repeated in __folio_alloc_node() rather than
+    shared with __alloc_pages_node().  Upstream also repeats them, because
+    its __alloc_pages() has no checks to delegate to.
+
+  - EXPORT_SYMBOL(__page_cache_alloc) is gone, replaced by
+    EXPORT_SYMBOL(filemap_alloc_folio).  __page_cache_alloc() survives as a
+    static inline in include/linux/pagemap.h, so the two in-tree callers
+    (mm/filemap.c and fs/cachefiles/rdwr.c) keep working unchanged.  Upstream
+    does exactly the same.
+
+On __GFP_COMP at order 0
+
+The wrappers add __GFP_COMP to the gfp mask, which is what tells the buddy
+allocator to prepare a compound page.  For the page cache that is always
+order 0, and the flag does nothing there:
+
+  - mm/page_alloc.c:prep_new_page() guards the call with
+    "if (order && (gfp_flags & __GFP_COMP))", so order 0 never reaches
+    prep_compound_page();
+  - ___GFP_COMP is 0x4000, which overlaps none of the zone-selection bits
+    (___GFP_DMA 0x01, ___GFP_HIGHMEM 0x02, ___GFP_DMA32 0x04,
+    ___GFP_MOVABLE 0x08) used to derive zone_idx and the migratetype.
+
+So the hot page cache allocation path is bit-for-bit unchanged, and the flag
+starts to matter only if some caller asks for order > 1.
+
+prep_transhuge_page() is called as upstream does.  With
+CONFIG_TRANSPARENT_HUGEPAGE off -- and it is off in this build -- it is an
+empty static inline in include/linux/huge_mm.h, so the call compiles away.
+
+diff --git a/include/linux/gfp.h b/include/linux/gfp.h
+index a377c25..4b758dd 100644
+--- a/include/linux/gfp.h
++++ b/include/linux/gfp.h
+@@ -510,6 +510,15 @@ __alloc_pages(gfp_t gfp_mask, unsigned int order, int preferred_nid)
+ 	return __alloc_pages_nodemask(gfp_mask, order, preferred_nid, NULL);
+ }
+ 
++/*
++ * Folio counterpart of __alloc_pages_nodemask() above (upstream patch 84/90).
++ * The page allocator is unchanged: the head page of the compound allocation
++ * is returned cast to a struct folio, and __GFP_COMP makes the buddy
++ * allocator set it up.
++ */
++struct folio *__folio_alloc(gfp_t gfp, unsigned int order, int preferred_nid,
++		nodemask_t *nodemask);
++
+ /*
+  * Allocate pages, preferring the node given as nid. The node must be valid and
+  * online. For more general interface, see alloc_pages_node().
+@@ -523,6 +532,18 @@ __alloc_pages_node(int nid, gfp_t gfp_mask, unsigned int order)
+ 	return __alloc_pages(gfp_mask, order, nid);
+ }
+ 
++/*
++ * Folio counterpart of __alloc_pages_node() above (upstream patch 84/90).
++ */
++static inline
++struct folio *__folio_alloc_node(gfp_t gfp, unsigned int order, int nid)
++{
++	VM_BUG_ON(nid < 0 || nid >= MAX_NUMNODES);
++	VM_WARN_ON((gfp & __GFP_THISNODE) && !node_online(nid));
++
++	return __folio_alloc(gfp, order, nid, NULL);
++}
++
+ /*
+  * Allocate pages, preferring the node given as nid. When nid == NUMA_NO_NODE,
+  * prefer the current CPU's closest node. Otherwise node must be valid and
+@@ -539,6 +560,7 @@ static inline struct page *alloc_pages_node(int nid, gfp_t gfp_mask,
+ 
+ #ifdef CONFIG_NUMA
+ extern struct page *alloc_pages_current(gfp_t gfp_mask, unsigned order);
++struct folio *folio_alloc(gfp_t gfp, unsigned int order);
+ 
+ static inline struct page *
+ alloc_pages(gfp_t gfp_mask, unsigned int order)
+@@ -553,6 +575,10 @@ extern struct page *alloc_pages_vma(gfp_t gfp_mask, int order,
+ #else
+ #define alloc_pages(gfp_mask, order) \
+ 		alloc_pages_node(numa_node_id(), gfp_mask, order)
++static inline struct folio *folio_alloc(gfp_t gfp, unsigned int order)
++{
++	return __folio_alloc_node(gfp, order, numa_node_id());
++}
+ #define alloc_pages_vma(gfp_mask, order, vma, addr, node, false)\
+ 	alloc_pages(gfp_mask, order)
+ #define alloc_hugepage_vma(gfp_mask, vma, addr, order)	\
+diff --git a/include/linux/pagemap.h b/include/linux/pagemap.h
+index a30e4bb..3b62d17 100644
+--- a/include/linux/pagemap.h
++++ b/include/linux/pagemap.h
+@@ -271,14 +271,24 @@ static inline void *folio_detach_private(struct folio *folio)
+  */
+ 
+ #ifdef CONFIG_NUMA
+-extern struct page *__page_cache_alloc(gfp_t gfp);
++struct folio *filemap_alloc_folio(gfp_t gfp, unsigned int order);
+ #else
+-static inline struct page *__page_cache_alloc(gfp_t gfp)
++static inline struct folio *filemap_alloc_folio(gfp_t gfp, unsigned int order)
+ {
+-	return alloc_pages(gfp, 0);
++	return folio_alloc(gfp, order);
+ }
+ #endif
+ 
++/*
++ * __page_cache_alloc() becomes a wrapper over filemap_alloc_folio()
++ * (upstream patch 85/90), so filesystems can be converted at leisure.  The
++ * page cache only ever wants order 0 here.
++ */
++static inline struct page *__page_cache_alloc(gfp_t gfp)
++{
++	return &filemap_alloc_folio(gfp, 0)->page;
++}
++
+ static inline struct page *page_cache_alloc(struct address_space *x)
+ {
+ 	return __page_cache_alloc(mapping_gfp_mask(x));
+diff --git a/mm/filemap.c b/mm/filemap.c
+index 4c9381b..02376fc 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -956,24 +956,24 @@ int add_to_page_cache_lru(struct page *page, struct address_space *mapping,
+ EXPORT_SYMBOL_GPL(add_to_page_cache_lru);
+ 
+ #ifdef CONFIG_NUMA
+-struct page *__page_cache_alloc(gfp_t gfp)
++struct folio *filemap_alloc_folio(gfp_t gfp, unsigned int order)
+ {
+ 	int n;
+-	struct page *page;
++	struct folio *folio;
+ 
+ 	if (cpuset_do_page_mem_spread()) {
+ 		unsigned int cpuset_mems_cookie;
+ 		do {
+ 			cpuset_mems_cookie = read_mems_allowed_begin();
+ 			n = cpuset_mem_spread_node();
+-			page = __alloc_pages_node(n, gfp, 0);
+-		} while (!page && read_mems_allowed_retry(cpuset_mems_cookie));
++			folio = __folio_alloc_node(gfp, order, n);
++		} while (!folio && read_mems_allowed_retry(cpuset_mems_cookie));
+ 
+-		return page;
++		return folio;
+ 	}
+-	return alloc_pages(gfp, 0);
++	return folio_alloc(gfp, order);
+ }
+-EXPORT_SYMBOL(__page_cache_alloc);
++EXPORT_SYMBOL(filemap_alloc_folio);
+ #endif
+ 
+ /*
+diff --git a/mm/mempolicy.c b/mm/mempolicy.c
+index f1aa930..4d45551 100644
+--- a/mm/mempolicy.c
++++ b/mm/mempolicy.c
+@@ -2177,6 +2177,21 @@ struct page *alloc_pages_current(gfp_t gfp, unsigned order)
+ }
+ EXPORT_SYMBOL(alloc_pages_current);
+ 
++/*
++ * Folio counterpart of alloc_pages_current() (upstream patch 84/90).  It sits
++ * here for the same reason: under CONFIG_NUMA, alloc_pages() and folio_alloc()
++ * are the two entry points that apply the current task's NUMA policy.
++ */
++struct folio *folio_alloc(gfp_t gfp, unsigned int order)
++{
++	struct page *page = alloc_pages_current(gfp | __GFP_COMP, order);
++
++	if (page && order > 1)
++		prep_transhuge_page(page);
++	return (struct folio *)page;
++}
++EXPORT_SYMBOL(folio_alloc);
++
+ int vma_dup_policy(struct vm_area_struct *src, struct vm_area_struct *dst)
+ {
+ 	struct mempolicy *pol = mpol_dup(vma_policy(src));
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index 289fa8c..fff3fdb 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -4915,6 +4915,26 @@ out:
+ }
+ EXPORT_SYMBOL(__alloc_pages_nodemask);
+ 
++/*
++ * Folio counterpart of __alloc_pages_nodemask() (upstream patch 84/90).
++ *
++ * The buddy allocator is untouched: __GFP_COMP makes it prepare the head page
++ * as a compound page, and the head page is what a struct folio is.  When
++ * CONFIG_TRANSPARENT_HUGEPAGE is off, prep_transhuge_page() is an empty static
++ * inline in include/linux/huge_mm.h, so the call below compiles away.
++ */
++struct folio *__folio_alloc(gfp_t gfp, unsigned int order, int preferred_nid,
++		nodemask_t *nodemask)
++{
++	struct page *page = __alloc_pages_nodemask(gfp | __GFP_COMP, order,
++			preferred_nid, nodemask);
++
++	if (page && order > 1)
++		prep_transhuge_page(page);
++	return (struct folio *)page;
++}
++EXPORT_SYMBOL(__folio_alloc);
++
+ /*
+  * Common helper functions. Never use with __GFP_HIGHMEM because the returned
+  * address cannot represent highmem pages. Use alloc_pages and then kmap if
