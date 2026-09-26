@@ -4,6 +4,34 @@ Este diretorio contem o backport de folios para o E404 4.19.404R usando
 somente a serie upstream Linux `folio-5.16` (merge
 `49f8275c7d9247cf1dd4440fc8162f784252c849`).
 
+## Estado de validacao
+
+Os builds sao cumulativos: o release do G2.5f contem G1 ate G2.5f. Entao um
+unico boot bem-sucedido do build mais novo valida a cadeia inteira, nao so o
+ultimo patch.
+
+| estagio | build | validacao |
+| --- | --- | --- |
+| G1 | `folio-g1` | aparelho |
+| G2.1 | `folio-g2` | aparelho |
+| G2.2a | `folio-g22` | aparelho |
+| G2.2b | `folio-g22b` | aparelho |
+| G2.3a–G2.3e | `folio-g23a` … `folio-g23e` | aparelho |
+| G2.3f | `folio-g23f` | aparelho |
+| G2.4a | `folio-g24a` | aparelho |
+| G2.4b | `folio-g24b` | aparelho |
+| G2.5a | `folio-g25a` | aparelho |
+| G2.5b | `folio-g25b` | aparelho (via G2.5f) |
+| G2.5c | `folio-g25c` | aparelho (via G2.5f) |
+| G2.5d | `folio-g25d` | aparelho (via G2.5f) |
+| G2.5e | `folio-g25e` | aparelho (via G2.5f) |
+| G2.5f | `folio-g25f` | aparelho |
+
+O que um boot prova e o que nao prova: o boot cobre o caminho de alocacao, page
+cache e LRU, porque o sistema inteiro depende deles para subir. Ele **nao** cobre
+o caminho de writeback, que e onde o G2.5f mexeu, nem o de readahead. Esses
+precisam de exercicio dirigido, nao so de bootar.
+
 ## G1
 
 `e404-folio-g1.patch` introduz o shim layout-preserving:
