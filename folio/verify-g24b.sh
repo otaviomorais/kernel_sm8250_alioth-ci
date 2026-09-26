@@ -120,9 +120,25 @@ ok "o lru_note_cost original continua ausente" \
    "esperado: nao existe no E404"
 
 # --- o chamador converte ----------------------------------------------
-ok "o unico chamador resolve o folio" \
-   "grep -q 'workingset_refault(page_folio(page), shadow);' \"\$F\"" \
-   "filemap.c ainda passa a page"
+# --- por que estas contagens sao teto, e nao igualdade ---------------------
+#
+# Estas contagens medem quantos callers AINDA usam a API de page.  Como cada
+# estagio converte mais um deles, a contagem so pode BAIXAR de estagio para
+# estagio: o G2.5c tirou um caller de __page_cache_alloc, o G2.5d outro de
+# add_to_page_cache_lru e de find_get_entry, o G2.5e outro de
+# pagecache_get_page.  Exigir = N fazia a verificacao de um estagio falhar
+# assim que um estagio posterior era ligado, que e o uso normal.
+#
+# O que precisa valer e o TETO: nenhum caller novo pode aparecer usando a API
+# de page.  Um estagio posterior pode converter mais, o que so reduz a
+# contagem.  Daqui para frente e -le.
+#
+# As contagens em arquivos que nenhum estagio de folio toca -- mm/memcontrol.c
+# e fs/cachefiles/rdwr.c -- continuam exatas de proposito: ali a igualdade e
+# justamente a prova de que o estagio nao saiu de mm/filemap.c.
+ok "o unico chamador passa um folio" \
+   "grep -q 'workingset_refault(\(folio\|page_folio(page)\), shadow);' \"\$F\"" \
+   "filemap.c parou de passar um folio; no G2.4b era page_folio(page), e o G2.5d deixou de precisar do page_folio"
 ok "nenhum chamador passa struct page" \
    "[ \"\$(nc 'workingset_refault(page,' \"\$F\")\" = 0 ]" \
    "sobrou chamada com struct page"

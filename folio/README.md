@@ -48,6 +48,112 @@ O workflow aplica G1, G2.1 e G2.2a somente quando `enable_folios_g22=true`;
 `enable_folios_g2=true` valida apenas G1+G2.1 e `enable_folios_g1=true`
 valida apenas G1.
 
+## Endurecimento da suite de verificacao
+
+Duas correcoes na suite vieram de um teste negativo do G2.5e, que quebra a
+arvore de proposito para ver se a verificacao percepto. As duas valiam
+assercoes que passavam numa arvore quebrada.
+
+### `ncd()` conta linha de codigo, nao linha comentada
+
+O `nc()` so descartava a linha de **continuacao** de um comentario de bloco, ou
+seja, as que comecam com `*`. A linha que abre e fecha o comentario na mesma
+linha passava direto, porque comeca com `/`. Comentar um `EXPORT_SYMBOL` com
+`/* ... */` na propria linha deixava `nc()` contando a linha, e a verificacao
+"o simbolo continua exportado" passava numa arvore que ja nao o tinha.
+
+O `ncd()` e o mesmo filtro, mais `-e '/\*' -e '\*/'`, entao descarta qualquer
+linha que contenha abertura ou fechamento de comentario. As dezessete
+verificacoes de `EXPORT_SYMBOL` dos sete scripts anteriores foram trocadas para
+ele.
+
+### As contagens de caller em `mm/filemap.c` sao teto, e nao igualdade
+
+Estas contagens medem quantos callers ainda usam a API de page. Como cada estagio
+converte mais um deles, a contagem so pode **baixar** de estagio para estagio: o
+G2.5c tirou um caller de `__page_cache_alloc`, o G2.5d outro de
+`add_to_page_cache_lru` e de `find_get_entry`, o G2.5e outro de
+`pagecache_get_page`. Exigir `= N` fazia a verificacao de um estagio falhar
+assim que um estagio posterior era ligado, que e o uso normal.
+
+O que precisa valer e o **teto**: nenhum caller novo pode aparecer usando a API
+de page. Um estagio posterior pode converter mais, o que so reduz a contagem.
+Entao sao `-le N`.
+
+As contagens em arquivos que nenhum estagio de folio toca — `mm/memcontrol.c` e
+`fs/cachefiles/rdwr.c` — continuam exatas de proposito: ali a igualdade e
+justamente a prova de que o estagio nao saiu de `mm/filemap.c`.
+
+Pelo mesmo motivo, duas verificacoes que exigiam a forma `page_folio(page)` do
+chamada a `workingset_refault()` passaram a aceitar `folio` tambem. O G2.5d
+deixou o `page_folio()` de fora porque o caller ja tem o folio na mao. A
+invariante que importa continua verificada a parte: nenhum caller passa
+`struct page *`.
+
+### Como isso e testado
+
+Rodar os oito `verify-*.sh` na arvore acumulada, e nao so o do estagio novo,
+e o que pega esse tipo deassa. O step do G2.5e no workflow faz isso, e foi ele
+que revelou as contagens envelhecidas.
+
+Os scripts rodam em bash 5.3 de verdade, nao em um espelho em PowerShell. O
+`sh.exe` do MinGit e um bash completo, mas so enxerga a propria raiz, entao
+precisa de uma juncao para|area de trabalho e de uma copia dele mesmo nomeada
+`bash.exe`, porque os scripts de apply chamam `bash "$SCRIPT_DIR/apply-gNNN.sh"`.
+
+## G2.5e
+
+`e404-folio-g2.5e.patch` aplica, sobre o G2.5d, o patch upstream 89/90
+(`mm/filemap: Add FGP_STABLE`).
+
+`__filemap_get_folio()` ganha `FGP_STABLE`, que espera o folio ficar estável, e
+`grab_cache_page_write_begin()` para de chamar `wait_for_stable_page()` e passa
+a pedir isso pela flag. `folio_wait_stable()` é nova em `mm/page-writeback.c`, ao
+lado de `wait_for_stable_page()`, que vira o wrapper dela.
+
+### FGP_STABLE vale 0x00000200, o valor do upstream
+
+Não é o próximo bit livre desta árvore, que seria `0x00000080`. O upstream tem
+`FGP_HEAD` em `0x00000080` e `FGP_ENTRY` em `0x00000100`, e nenhum dos dois
+existe aqui. Deixar os dois bits sem uso não custa nada, mantém a numeração
+idêntica à do 5.16 e impede que uma flag adicionada mais tarde colida com um
+valor copiado do upstream.
+
+O `verify-g25e.sh` confere que `FGP_STABLE` não colide com nenhuma das outras
+oito flags, o que é a checagem que realmente importa aqui.
+
+### O ramo fica antes do rótulo `no_page:`
+
+O upstream põe o tratamento de `FGP_STABLE` depois do ramo
+`FGP_WRITE`/`page_is_idle()`. A versão do E404 dessa função não tem esse ramo,
+então não há nada entre o bloco de `FGP_ACCESSED` e `no_page:` para ele seguir.
+Chegar ali já garante que o folio não é `NULL`, porque o bloco de cima só salta
+para `no_page:` quando ele é.
+
+### O pre-check de writeback foi mantido
+
+`folio_wait_stable()` carrega o corpo do E404, com o pré-check de
+`PageWriteback()` que vinha de `wait_on_page_writeback()`, escrito como
+`folio_test_writeback()`. Ele não é redundante: sem ele todo caller pegaria o
+lock da waitqueue só para descobrir que não há nada para esperar.
+
+### `grab_cache_page_write_begin` continua sendo função real
+
+O upstream o move para `mm/folio-compat.c`, que esta árvore não tem. Ele não
+está em `android/abi_gki_aarch64_qcom`, então — ao contrário de
+`pagecache_get_page()` — não há promessa de ABI o obrigando a continuar
+exportado. Mas os filesystems do vendor desta árvore (f2fs, ubifs) chamam ele,
+então continua sendo uma função real com o seu `EXPORT_SYMBOL`, e não um
+`static inline`.
+
+O corpo do E404 era byte a byte o do 5.16 que este patch reescreve, então o hunk
+portou direto. A espera continua rodando antes de a page ser devolvida, que é
+onde o `wait_for_stable_page()` explícito rodava.
+
+O `noinline` que o upstream põe em `pagecache_get_page()` vai no mesmo lugar de
+lá: no `mm/filemap.c`, porque é onde a função está. A razão é a mesma — manter um
+wrapper de compatibilidade fora do caminho quente de quem só quer uma page.
+
 ## G2.5d
 
 `e404-folio-g2.5d.patch` aplica, sobre o G2.5c, o patch upstream 88/90

@@ -118,6 +118,11 @@ on:
         required: false
         type: boolean
         default: false
+      enable_folios_g25e:
+        description: 'Integrar o G2.5e de folios (FGP_STABLE, patch 89/90; opt-in)'
+        required: false
+        type: boolean
+        default: false
       droidspaces_profile:
         description: 'Perfil DroidSpaces (full recomendado; minimal; perfis cumulativos históricos)'
         required: true
@@ -446,6 +451,14 @@ jobs:
           echo "Aplicando o G2.5d de folios (patch 88/90, filemap_get_folio e folio_mark_accessed)..."
           bash folio/apply-g25d.sh kernel
           echo "FOLIO_SUFFIX=-folio-g25d" >> "$GITHUB_ENV"
+
+      - name: Integrar folio G2.5e (FGP_STABLE, opt-in)
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25e == 'true')
+        run: |
+          set -euo pipefail
+          echo "Aplicando o G2.5e de folios (patch 89/90, FGP_STABLE e folio_wait_stable)..."
+          bash folio/apply-g25e.sh kernel
+          echo "FOLIO_SUFFIX=-folio-g25e" >> "$GITHUB_ENV"
 
       - name: Checkout KernelSU-Next legacy (UAPI 2)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false') && (inputs.ksu_stack == 'legacy-susfs2-experimental')
@@ -1047,6 +1060,24 @@ jobs:
           grep -q 'EXPORT_SYMBOL(pagecache_get_page);' kernel/mm/filemap.c
           echo 'G2.5d: a ABI do vendor continua satisfeita; pagecache_get_page segue exportado.'
 
+      - name: Validar folio G2.5e no kernel
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25e == 'true')
+        run: |
+          set -euo pipefail
+          bash folio/verify-g25e.sh kernel
+
+          test -z "$(find kernel -type f -name '*.rej' -print -quit)"
+          # A serie e aditiva: nenhum arquivo novo em mm/, nenhum wrapper em
+          # mm/folio-compat.c, nenhum nome de simbolo trocado.  Rodamos os
+          # outros verifies aqui, e nao so o do estagio, para pegar asercao
+          # que envelheceu com o estagio novo.
+          test ! -e kernel/mm/folio-compat.c
+          for v in g23f g24a g24b g25a g25b g25c g25d; do
+            echo "Rodando folio/verify-$v.sh na arvore acumulada..."
+            bash "folio/verify-$v.sh" kernel
+          done
+          echo 'Folio G2.5e validado; FGP_STABLE e folio_wait_stable novos, e os 8 verifies passam na arvore acumulada.'
+
       - name: Compilar Kernel (Image, dtbs, dtbo.img)
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |
@@ -1196,7 +1227,9 @@ jobs:
           else
             MGLRU_STATUS="Desativado (baseline preservado)"
           fi
-          if [ "$FOLIO_SUFFIX" = "-folio-g25d" ]; then
+          if [ "$FOLIO_SUFFIX" = "-folio-g25e" ]; then
+            FOLIO_STATUS="G2.5e ativado (patch 89/90: FGP_STABLE 0x200, filemap_get_folio pode esperar o folio ficar estavel; folio_wait_stable nova; wait_for_stable_page e grab_cache_page_write_begin preservados; grab_cache_page_write_begin segue exportado para os filesystems do vendor)"
+          elif [ "$FOLIO_SUFFIX" = "-folio-g25d" ]; then
             FOLIO_STATUS="G2.5d ativado (patch 88/90: __filemap_get_folio, filemap_get_folio, folio_mark_accessed; pagecache_get_page e mark_page_accessed preservados como wrappers, pagecache_get_page segue exportado por causa da ABI do vendor)"
           elif [ "$FOLIO_SUFFIX" = "-folio-g25c" ]; then
             FOLIO_STATUS="G2.5c ativado (patch 87/90: mapping_get_entry devolve folio; find_get_entry preservado como wrapper para os 3 callers nao convertidos)"

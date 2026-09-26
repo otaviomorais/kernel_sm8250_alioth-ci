@@ -19,6 +19,16 @@ RD="$KERNEL_DIR/fs/cachefiles/rdwr.c"
 [ -f "$H" ] || { echo "FATAL: include/linux/pagemap.h ausente" >&2; exit 1; }
 
 n() { grep -c "$1" "$2" || true; }
+# ncd() = "nao comentario", para as contagens que precisam valer.
+#
+# nc() so descarta a linha de CONTINUACAO de um comentario de bloco.  A linha
+# que abre e fecha o comentario na mesma linha passa direto por ela, porque
+# comeca com '/' e nao com '*'.  Comentar um EXPORT_SYMBOL com /* ... */ na
+# propria linha fazia nc() continuar contando a linha, e a asercao passava
+# numa arvore que ja nao tinha o simbolo.  ncd() descarta tambem qualquer linha
+# que contenha /* ou */.
+ncd() { grep -v -e '^[[:space:]]*\*' -e '/\*' -e '\*/' "$2" | grep -c "$1" || true; }
+
 ok() { if eval "$2"; then echo "  ok   $1"; else echo "  FALHA $1 -> $3" >&2; exit 1; fi; }
 
 echo "Validando o G2.3f..."
@@ -101,12 +111,12 @@ ok "folio_add_wait_queue definido" \
    "[ \"\$(n '^void folio_add_wait_queue(struct folio \*folio, wait_queue_entry_t \*waiter)' \"\$F\")\" = 1 ]" \
    "esperava 1 definicao"
 ok "folio_add_wait_queue exportado" \
-   "grep -q 'EXPORT_SYMBOL_GPL(folio_add_wait_queue);' \"\$F\"" "sem EXPORT_SYMBOL_GPL"
+   "[ \"\$(ncd 'EXPORT_SYMBOL_GPL(folio_add_wait_queue);' \"\$F\")\" = 1 ]" "sem EXPORT_SYMBOL_GPL"
 ok "add_page_wait_queue definido" \
    "[ \"\$(n '^void add_page_wait_queue(struct page \*page, wait_queue_entry_t \*waiter)' \"\$F\")\" = 1 ]" \
    "esperava 1 definicao"
 ok "add_page_wait_queue exportado" \
-   "grep -q 'EXPORT_SYMBOL_GPL(add_page_wait_queue);' \"\$F\"" "sem EXPORT_SYMBOL_GPL"
+   "[ \"\$(ncd 'EXPORT_SYMBOL_GPL(add_page_wait_queue);' \"\$F\")\" = 1 ]" "sem EXPORT_SYMBOL_GPL"
 ok "wrapper delega para o folio" \
    "grep -q 'folio_add_wait_queue(page_folio(page), waiter);' \"\$F\"" "wrapper nao delega"
 ok "header declara folio_add_wait_queue" \

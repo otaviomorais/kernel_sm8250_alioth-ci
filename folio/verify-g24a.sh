@@ -26,6 +26,16 @@ n() { grep -c "$1" "$2" || true; }
 # nc() e o mesmo, ignorando linhas de comentario de bloco (" * ...").  Necessario
 # porque os comentarios deste patch citam os simbolos que ele nao introduz.
 nc() { grep -v '^[[:space:]]*\*' "$2" | grep -c "$1" || true; }
+# ncd() = "nao comentario", para as contagens que precisam valer.
+#
+# nc() so descarta a linha de CONTINUACAO de um comentario de bloco.  A linha
+# que abre e fecha o comentario na mesma linha passa direto por ela, porque
+# comeca com '/' e nao com '*'.  Comentar um EXPORT_SYMBOL com /* ... */ na
+# propria linha fazia nc() continuar contando a linha, e a asercao passava
+# numa arvore que ja nao tinha o simbolo.  ncd() descarta tambem qualquer linha
+# que contenha /* ou */.
+ncd() { grep -v -e '^[[:space:]]*\*' -e '/\*' -e '\*/' "$2" | grep -c "$1" || true; }
+
 # fn() extrai o corpo de uma funcao, ate a chave de abertura no nivel 0.
 fn() { awk -v sig="$2" 'index($0, sig) { inb=1 } inb { print } inb && /^[}]$/ { exit }' "$1"; }
 ok() { if eval "$2"; then echo "  ok   $1"; else echo "  FALHA $1 -> $3" >&2; exit 1; fi; }
@@ -90,7 +100,7 @@ ok "os dois caminhos de fim de writeback seguem de pe" \
    "[ \"\$(n '^void end_page_writeback' \"\$F\")\" = 1 ]" \
    "end_page_writeback sumiu"
 ok "EXPORT_SYMBOL de end_page_writeback mantido" \
-   "grep -q 'EXPORT_SYMBOL(end_page_writeback);' \"\$F\"" \
+   "[ \"\$(ncd 'EXPORT_SYMBOL(end_page_writeback);' \"\$F\")\" = 1 ]" \
    "simbolo exportado sumiu"
 
 # --- helpers de folio memcg, nos dois ramos do Kconfig -----------------

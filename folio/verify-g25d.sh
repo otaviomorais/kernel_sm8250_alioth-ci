@@ -22,6 +22,16 @@ done
 
 n() { grep -c "$1" "$2" || true; }
 nc() { grep -v '^[[:space:]]*\*' "$2" | grep -c "$1" || true; }
+# ncd() = "nao comentario", para as contagens que precisam valer.
+#
+# nc() so descarta a linha de CONTINUACAO de um comentario de bloco.  A linha
+# que abre e fecha o comentario na mesma linha passa direto por ela, porque
+# comeca com '/' e nao com '*'.  Comentar um EXPORT_SYMBOL com /* ... */ na
+# propria linha fazia nc() continuar contando a linha, e a asercao passava
+# numa arvore que ja nao tinha o simbolo.  ncd() descarta tambem qualquer linha
+# que contenha /* ou */.
+ncd() { grep -v -e '^[[:space:]]*\*' -e '/\*' -e '\*/' "$2" | grep -c "$1" || true; }
+
 # fn() extrai o corpo de uma funcao, ate a chave de abertura no nivel 0.
 # A assinatura passada tem de ser mais especifica que a linha do comentario
 # kdoc, senao awk casa na documentacao e devolve o bloco errado.
@@ -49,7 +59,7 @@ ok "__filemap_get_folio devolve struct folio *" \
    "grep -q '^struct folio \*__filemap_get_folio(struct address_space \*mapping, pgoff_t index,$' \"\$FL\"" \
    "a assinatura nao foi convertida"
 ok "__filemap_get_folio esta exportada" \
-   "grep -q 'EXPORT_SYMBOL(__filemap_get_folio);' \"\$FL\"" "perdeu o export"
+   "[ \"\$(ncd 'EXPORT_SYMBOL(__filemap_get_folio);' \"\$FL\")\" = 1 ]" "perdeu o export"
 ok "a funcao carrega a entrada como folio" \
    "grep -q 'struct folio \*folio;' <<< \"\$GET\"" "ainda declara struct page *"
 ok "a entrada vem do mapping_get_entry do G2.5c" \
@@ -109,7 +119,7 @@ ok "pagecache_get_page continua sendo funcao real" \
    "grep -q '^struct page \*pagecache_get_page(struct address_space \*mapping, pgoff_t offset,$' \"\$FL\"" \
    "virou static inline e o simbolo do vendor desapareceu"
 ok "pagecache_get_page continua exportada" \
-   "grep -q 'EXPORT_SYMBOL(pagecache_get_page);' \"\$FL\"" \
+   "[ \"\$(ncd 'EXPORT_SYMBOL(pagecache_get_page);' \"\$FL\")\" = 1 ]" \
    "o vendor promete o simbolo em abi_gki_aarch64_qcom"
 ok "o wrapper delega para __filemap_get_folio" \
    "grep -q 'struct folio \*folio = __filemap_get_folio(mapping, offset, fgp_flags,' <<< \"\$WRAP\"" \
@@ -135,7 +145,7 @@ ok "filemap_get_folio e um inline novo" \
 ok "filemap_get_folio delega sem flags" \
    "grep -q 'return __filemap_get_folio(mapping, index, 0, 0);' \"\$PM\"" "o inline nao delega"
 ok "filemap_get_folio nao exporta nada" \
-   "[ \"\$(nc 'EXPORT_SYMBOL' \"\$PM\")\" = 0 ]" "o header passou a exportar simbolo"
+   "[ \"\$(ncd 'EXPORT_SYMBOL' \"\$PM\")\" = 0 ]" "o header passou a exportar simbolo"
 
 # --- a lista de ABI do vendor ---------------------------------------
 # O arquivo e um ini: "[abi_symbol_list]" no topo e dois espacos de indentacao
@@ -176,11 +186,11 @@ ok "nao ha retorno cedo em unevictable (E404, nao 5.16)" \
    "[ \"\$(grep -c 'folio_test_unevictable' <<< \"\$MA\")\" = 0 ]" \
    "veio o corpo do 5.16, que retorna cedo"
 ok "folio_mark_accessed esta exportada" \
-   "grep -q 'EXPORT_SYMBOL(folio_mark_accessed);' \"\$SW\"" "perdeu o export"
+   "[ \"\$(ncd 'EXPORT_SYMBOL(folio_mark_accessed);' \"\$SW\")\" = 1 ]" "perdeu o export"
 ok "mark_page_accessed virou wrapper" \
    "[ \"\$(grep -c 'compound_head' <<< \"\$MPA\")\" = 0 ]" "o wrapper ainda e a implementacao"
 ok "mark_page_accessed continua exportada" \
-   "grep -q 'EXPORT_SYMBOL(mark_page_accessed);' \"\$SW\"" "perdeu o export"
+   "[ \"\$(ncd 'EXPORT_SYMBOL(mark_page_accessed);' \"\$SW\")\" = 1 ]" "perdeu o export"
 
 # --- declaracoes: uma so, e no lugar certo ---------------------------
 ok "folio_mark_accessed e declarada uma vez" \
@@ -211,15 +221,32 @@ ok "find_get_page segue intacto" \
 ok "find_lock_page segue intacto" \
    "grep -q '^static inline struct page \*find_lock_page(struct address_space \*mapping,$' \"\$PM\"" \
    "find_lock_page mudou"
-ok "o caller interno de filemap.c segue usando pagecache_get_page" \
-   "[ \"\$(nc '= pagecache_get_page(mapping' \"\$FL\")\" = 2 ]" "esperava 2"
+# --- por que estas contagens sao teto, e nao igualdade ---------------------
+#
+# Estas contagens medem quantos callers AINDA usam a API de page.  Como cada
+# estagio converte mais um deles, a contagem so pode BAIXAR de estagio para
+# estagio: o G2.5c tirou um caller de __page_cache_alloc, o G2.5d outro de
+# add_to_page_cache_lru e de find_get_entry, o G2.5e outro de
+# pagecache_get_page.  Exigir = N fazia a verificacao de um estagio falhar
+# assim que um estagio posterior era ligado, que e o uso normal.
+#
+# O que precisa valer e o TETO: nenhum caller novo pode aparecer usando a API
+# de page.  Um estagio posterior pode converter mais, o que so reduz a
+# contagem.  Daqui para frente e -le.
+#
+# As contagens em arquivos que nenhum estagio de folio toca -- mm/memcontrol.c
+# e fs/cachefiles/rdwr.c -- continuam exatas de proposito: ali a igualdade e
+# justamente a prova de que o estagio nao saiu de mm/filemap.c.
+ok "os callers internos de filemap.c seguem usando pagecache_get_page" \
+   "[ \"\$(nc 'pagecache_get_page(mapping' \"\$FL\")\" -le 2 ]" \
+   "o teto e 2; a contagem tambem pega o return que o G2.5e deixou"
 
 # --- o wrapper find_get_entry do G2.5c continua de pe -----------------
 # O 88/90 converte so pagecache_get_page.  find_lock_entry e
 # mm/memcontrol.c ainda chamam find_get_entry, entao o wrapper do G2.5c nao
 # pode ser removido aqui; o 5.16 so o drops num patch posterior.
 ok "find_get_entry do G2.5c continua exportado" \
-   "grep -q 'EXPORT_SYMBOL(find_get_entry);' \"\$FL\"" "perdeu o export"
+   "[ \"\$(ncd 'EXPORT_SYMBOL(find_get_entry);' \"\$FL\")\" = 1 ]" "perdeu o export"
 ok "find_get_entry continua devolvendo struct page *" \
    "grep -q '^struct page \*find_get_entry(struct address_space \*mapping, pgoff_t offset)$' \"\$FL\"" \
    "a assinatura mudou"

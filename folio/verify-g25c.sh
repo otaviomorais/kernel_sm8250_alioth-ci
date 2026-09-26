@@ -23,6 +23,16 @@ done
 
 n() { grep -c "$1" "$2" || true; }
 nc() { grep -v '^[[:space:]]*\*' "$2" | grep -c "$1" || true; }
+# ncd() = "nao comentario", para as contagens que precisam valer.
+#
+# nc() so descarta a linha de CONTINUACAO de um comentario de bloco.  A linha
+# que abre e fecha o comentario na mesma linha passa direto por ela, porque
+# comeca com '/' e nao com '*'.  Comentar um EXPORT_SYMBOL com /* ... */ na
+# propria linha fazia nc() continuar contando a linha, e a asercao passava
+# numa arvore que ja nao tinha o simbolo.  ncd() descarta tambem qualquer linha
+# que contenha /* ou */.
+ncd() { grep -v -e '^[[:space:]]*\*' -e '/\*' -e '\*/' "$2" | grep -c "$1" || true; }
+
 # fn() extrai o corpo de uma funcao, ate a chave de abertura no nivel 0.
 fn() { awk -v sig="$2" 'index($0, sig) { inb=1 } inb { print } inb && /^[}]$/ { exit }' "$1"; }
 ok() { if eval "$2"; then echo "  ok   $1"; else echo "  FALHA $1 -> $3" >&2; exit 1; fi; }
@@ -76,7 +86,7 @@ ok "find_get_entry continua devolvendo struct page *" \
    "grep -q '^struct page \*find_get_entry(struct address_space \*mapping, pgoff_t offset)$' \"\$FL\"" \
    "a assinatura mudou"
 ok "find_get_entry continua exportado" \
-   "grep -q 'EXPORT_SYMBOL(find_get_entry);' \"\$FL\"" "perdeu o export"
+   "[ \"\$(ncd 'EXPORT_SYMBOL(find_get_entry);' \"\$FL\")\" = 1 ]" "perdeu o export"
 ok "o wrapper delega para mapping_get_entry" \
    "grep -q 'void \*entry = mapping_get_entry(mapping, offset);' <<< \"\$WRAP\"" \
    "o wrapper nao delega"
@@ -100,8 +110,25 @@ ok "mapping_get_entry nao foi declarado no header" \
    "a funcao estatica nao deve ser declarada"
 
 # --- os tres callers seguem compilando sem mudanca -------------------
-ok "os 2 callers de filemap.c seguem usando find_get_entry" \
-   "[ \"\$(nc '= find_get_entry(mapping, offset);' \"\$FL\")\" = 2 ]" "esperava 2"
+# --- por que estas contagens sao teto, e nao igualdade ---------------------
+#
+# Estas contagens medem quantos callers AINDA usam a API de page.  Como cada
+# estagio converte mais um deles, a contagem so pode BAIXAR de estagio para
+# estagio: o G2.5c tirou um caller de __page_cache_alloc, o G2.5d outro de
+# add_to_page_cache_lru e de find_get_entry, o G2.5e outro de
+# pagecache_get_page.  Exigir = N fazia a verificacao de um estagio falhar
+# assim que um estagio posterior era ligado, que e o uso normal.
+#
+# O que precisa valer e o TETO: nenhum caller novo pode aparecer usando a API
+# de page.  Um estagio posterior pode converter mais, o que so reduz a
+# contagem.  Daqui para frente e -le.
+#
+# As contagens em arquivos que nenhum estagio de folio toca -- mm/memcontrol.c
+# e fs/cachefiles/rdwr.c -- continuam exatas de proposito: ali a igualdade e
+# justamente a prova de que o estagio nao saiu de mm/filemap.c.
+ok "os callers de filemap.c seguem usando find_get_entry" \
+   "[ \"\$(nc '= find_get_entry(mapping, offset);' \"\$FL\")\" -le 2 ]" \
+   "o teto e 2: nenhum caller novo pode aparecer usando a API de page"
 ok "o caller de memcontrol.c segue usando find_get_entry" \
    "[ \"\$(nc 'find_get_entry(mapping, pgoff);' \"\$MC\")\" = 1 ]" "esperava 1"
 ok "pagecache_get_page nao foi convertido ainda" \

@@ -1,0 +1,198 @@
+From: Codex folio backport <codex@local>
+Subject: [PATCH] E404 folio G2.5e: Add FGP_STABLE (upstream 89/90)
+
+__filemap_get_folio() learns FGP_STABLE, which waits for the folio to be
+stable, and grab_cache_page_write_begin() stops calling
+wait_for_stable_page() itself and asks for it through the flag instead.
+folio_wait_stable() is added in mm/page-writeback.c next to
+wait_for_stable_page(), which becomes its wrapper.
+
+Divergences from upstream, all deliberate:
+
+  - FGP_STABLE is 0x00000200, the upstream value, and not the next free bit
+    in this tree.  Upstream has FGP_HEAD at 0x00000080 and FGP_ENTRY at
+    0x00000100, and neither exists here: the E404 xarray holds only head
+    pages, so there is no multipage entry for FGP_HEAD to select and no
+    shadow/swap entry for FGP_ENTRY to hand back.  Leaving the two bits
+    unused costs nothing, keeps the numbering identical to 5.16, and makes
+    it impossible for a flag added here later to collide with a value
+    copied from upstream.
+
+  - The FGP_STABLE branch goes straight before the no_page: label.  Upstream
+    puts it after the FGP_WRITE/page_is_idle() branch, which the E404
+    version of this function does not have, so there is nothing between the
+    FGP_ACCESSED branch and no_page: for it to follow.
+
+  - grab_cache_page_write_begin() keeps its own symbol and its
+    EXPORT_SYMBOL.  Upstream moves it to mm/folio-compat.c, which this
+    tree does not have.  It is not listed in android/abi_gki_aarch64_qcom,
+    so unlike pagecache_get_page() there is no ABI promise forcing it, but
+    the vendor filesystems in this tree do call it, so it stays a real
+    exported function rather than becoming a static inline.
+
+  - noinline goes on pagecache_get_page() in mm/filemap.c.  Upstream puts
+    it in mm/folio-compat.c for the same reason it has there: to keep a
+    compatibility wrapper out of the callers' hot path.  That function is
+    already a real function since G2.5d, for the ABI reason documented
+    there, so the attribute lands on the same definition.
+
+  - folio_wait_stable() keeps the PageWriteback() pre-check that
+    wait_for_stable_page() got from wait_on_page_writeback(), spelled as
+    folio_test_writeback().  It is not redundant: without it every caller
+    would take the page lock of the waitqueue only to find nothing to
+    wait for.
+
+E404's grab_cache_page_write_begin() was byte-for-byte the same as the 5.16
+version this patch rewrites, so that hunk ports directly.  The wait still
+happens before the page is returned to the caller, which is where the
+explicit wait_for_stable_page() used to run.
+
+The rest of the folio series is untouched: find_get_entry() from G2.5c
+keeps its wrapper, the G2.5a allocation path and the G2.5b insertion path
+are unchanged, and no caller outside mm/filemap.c is converted.
+
+diff --git a/include/linux/pagemap.h b/include/linux/pagemap.h
+index 3ac02b1..e494b8f 100644
+--- a/include/linux/pagemap.h
++++ b/include/linux/pagemap.h
+@@ -313,6 +313,17 @@ pgoff_t page_cache_prev_miss(struct address_space *mapping,
+ #define FGP_NOFS		0x00000010
+ #define FGP_NOWAIT		0x00000020
+ #define FGP_FOR_MMAP		0x00000040
++/*
++ * Upstream patch 89/90.  The value is the upstream one, 0x00000200, and
++ * not the next free bit in this tree.  Upstream has %FGP_HEAD at
++ * 0x00000080 and %FGP_ENTRY at 0x00000100, neither of which exists
++ * here: the E404 xarray holds only head pages, so there is no multipage
++ * entry for %FGP_HEAD to select and no shadow/swap entry for
++ * %FGP_ENTRY to hand back.  Leaving the two bits unused costs nothing and
++ * keeps the numbering identical to 5.16, so a flag added here later
++ * cannot collide with a value taken from upstream.
++ */
++#define FGP_STABLE		0x00000200
+ 
+ struct folio *__filemap_get_folio(struct address_space *mapping, pgoff_t index,
+ 		int fgp_flags, gfp_t gfp);
+@@ -795,6 +806,7 @@ static inline __sched void wait_on_page_writeback(struct page *page)
+ 
+ extern void end_page_writeback(struct page *page);
+ void folio_end_writeback(struct folio *folio);
++void folio_wait_stable(struct folio *folio);
+ void wait_for_stable_page(struct page *page);
+ 
+ void page_endio(struct page *page, bool is_write, int err);
+diff --git a/mm/filemap.c b/mm/filemap.c
+index 414896f..3a93ad2 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -1969,6 +1969,7 @@ EXPORT_SYMBOL(find_lock_entry);
+  * * %FGP_WRITE - The page will be written
+  * * %FGP_NOFS - __GFP_FS will get cleared in gfp mask
+  * * %FGP_NOWAIT - Don't get blocked by page lock
++ * * %FGP_STABLE - Wait for the folio to be stable (finished writeback).
+  *
+  * If %FGP_LOCK or %FGP_CREAT are specified then the function may sleep even
+  * if the %GFP flags specified for %FGP_CREAT are atomic.
+@@ -2025,6 +2026,12 @@ repeat:
+ 	if (folio && (fgp_flags & FGP_ACCESSED))
+ 		folio_mark_accessed(folio);
+ 
++	/* O folio nao e NULL aqui: o branch acima so salta para no_page se for.
++	 * O upstream poe este pedaco depois do ramo FGP_WRITE/page_is_idle(),
++	 * que esta arvore nao tem. */
++	if (fgp_flags & FGP_STABLE)
++		folio_wait_stable(folio);
++
+ no_page:
+ 	if (!folio && (fgp_flags & FGP_CREAT)) {
+ 		int err;
+@@ -2077,6 +2084,9 @@ EXPORT_SYMBOL(__filemap_get_folio);
+  * E404 has neither the flag nor the multi-page xarray entries those handle,
+  * so the head page is always the right answer here.
+  */
++/* noinline vem do patch 89/90, onde fica em mm/folio-compat.c: mantem este
++ * wrapper de compatibilidade fora das linhas quentes de quem so quer uma page. */
++noinline
+ struct page *pagecache_get_page(struct address_space *mapping, pgoff_t offset,
+ 		int fgp_flags, gfp_t cache_gfp_mask)
+ {
+@@ -3563,22 +3573,26 @@ EXPORT_SYMBOL(generic_file_direct_write);
+ /*
+  * Find or create a page at the given pagecache position. Return the locked
+  * page. This function is specifically for buffered writes.
++ *
++ * Upstream patch 89/90: the wait for a stable page happens inside
++ * __filemap_get_folio() behind FGP_STABLE, so that any caller of
++ * filemap_get_folio() can ask for it.  It ran at the same point, before
++ * the page was returned.
++ *
++ * This stays a real function with its EXPORT_SYMBOL, not a static inline,
++ * because the vendor filesystems in this tree call it.  It is not in
++ * android/abi_gki_aarch64_qcom, but it is a live exported entry point.
+  */
+ struct page *grab_cache_page_write_begin(struct address_space *mapping,
+ 					pgoff_t index, unsigned flags)
+ {
+-	struct page *page;
+-	int fgp_flags = FGP_LOCK|FGP_WRITE|FGP_CREAT;
++	int fgp_flags = FGP_LOCK|FGP_WRITE|FGP_CREAT|FGP_STABLE;
+ 
+ 	if (flags & AOP_FLAG_NOFS)
+ 		fgp_flags |= FGP_NOFS;
+ 
+-	page = pagecache_get_page(mapping, index, fgp_flags,
++	return pagecache_get_page(mapping, index, fgp_flags,
+ 			mapping_gfp_mask(mapping));
+-	if (page)
+-		wait_for_stable_page(page);
+-
+-	return page;
+ }
+ EXPORT_SYMBOL(grab_cache_page_write_begin);
+ 
+diff --git a/mm/page-writeback.c b/mm/page-writeback.c
+index c0b978b..dc1e9f9 100644
+--- a/mm/page-writeback.c
++++ b/mm/page-writeback.c
+@@ -2816,16 +2816,34 @@ int __test_set_page_writeback(struct page *page, bool keep_write)
+ EXPORT_SYMBOL(__test_set_page_writeback);
+ 
+ /**
+- * wait_for_stable_page() - wait for writeback to finish, if necessary.
+- * @page:	The page to wait on.
++ * folio_wait_stable - wait for writeback to finish, if necessary.
++ * @folio: The folio to wait on.
+  *
+- * This function determines if the given page is related to a backing device
+- * that requires page contents to be held stable during writeback.  If so, then
+- * it will wait for any pending writeback to complete.
++ * This function determines if the given folio is related to a backing device
++ * that requires page contents to be held stable during writeback.  If so, it
++ * will wait for any pending writeback to complete.
++ *
++ * Upstream patch 89/90.  The body is E404's wait_for_stable_page() with the
++ * page replaced by the folio it heads.  The PageWriteback() pre-check of
++ * wait_on_page_writeback() is kept, spelled as folio_test_writeback(): it is
++ * not redundant, it avoids taking the page lock of the waitqueue only to find
++ * out that there is nothing to wait for.
++ */
++void folio_wait_stable(struct folio *folio)
++{
++	if (bdi_cap_stable_pages_required(inode_to_bdi(folio->mapping->host)) &&
++	    folio_test_writeback(folio))
++		folio_wait_bit(folio, PG_writeback);
++}
++EXPORT_SYMBOL_GPL(folio_wait_stable);
++
++/*
++ * Compatibility wrapper for callers that were not converted to folios
++ * (upstream keeps wait_for_stable_page() in mm/filemap.c and lets this one
++ * disappear later; this tree has no mm/folio-compat.c to move it to).
+  */
+ void wait_for_stable_page(struct page *page)
+ {
+-	if (bdi_cap_stable_pages_required(inode_to_bdi(page->mapping->host)))
+-		wait_on_page_writeback(page);
++	folio_wait_stable(page_folio(page));
+ }
+ EXPORT_SYMBOL_GPL(wait_for_stable_page);

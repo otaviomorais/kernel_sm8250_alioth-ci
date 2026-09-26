@@ -26,6 +26,16 @@ done
 n() { grep -c "$1" "$2" || true; }
 # nc() e o mesmo, ignorando linhas de comentario de bloco (" * ...").
 nc() { grep -v '^[[:space:]]*\*' "$2" | grep -c "$1" || true; }
+# ncd() = "nao comentario", para as contagens que precisam valer.
+#
+# nc() so descarta a linha de CONTINUACAO de um comentario de bloco.  A linha
+# que abre e fecha o comentario na mesma linha passa direto por ela, porque
+# comeca com '/' e nao com '*'.  Comentar um EXPORT_SYMBOL com /* ... */ na
+# propria linha fazia nc() continuar contando a linha, e a asercao passava
+# numa arvore que ja nao tinha o simbolo.  ncd() descarta tambem qualquer linha
+# que contenha /* ou */.
+ncd() { grep -v -e '^[[:space:]]*\*' -e '/\*' -e '\*/' "$2" | grep -c "$1" || true; }
+
 # fn() extrai o corpo de uma funcao, ate a chave de abertura no nivel 0.
 fn() { awk -v sig="$2" 'index($0, sig) { inb=1 } inb { print } inb && /^[}]$/ { exit }' "$1"; }
 ok() { if eval "$2"; then echo "  ok   $1"; else echo "  FALHA $1 -> $3" >&2; exit 1; fi; }
@@ -37,7 +47,7 @@ ok "__folio_alloc definido em page_alloc.c" \
    "[ \"\$(n '^struct folio \*__folio_alloc(gfp_t gfp, unsigned int order, int preferred_nid,$' \"\$PA\")\" = 1 ]" \
    "esperava 1 definicao com o nodemask"
 ok "__folio_alloc exportado" \
-   "grep -q 'EXPORT_SYMBOL(__folio_alloc);' \"\$PA\"" "sem EXPORT_SYMBOL"
+   "[ \"\$(ncd 'EXPORT_SYMBOL(__folio_alloc);' \"\$PA\")\" = 1 ]" "sem EXPORT_SYMBOL"
 ok "__folio_alloc delega para __alloc_pages_nodemask" \
    "grep -q '__alloc_pages_nodemask(gfp | __GFP_COMP, order,' \"\$PA\"" \
    "nao usa o caminho com nodemask"
@@ -62,7 +72,7 @@ ok "folio_alloc definido em mempolicy.c" \
    "grep -q '^struct folio \*folio_alloc(gfp_t gfp, unsigned int order)$' \"\$MP\"" \
    "esperava 1 definicao"
 ok "folio_alloc exportado" \
-   "grep -q 'EXPORT_SYMBOL(folio_alloc);' \"\$MP\"" "sem EXPORT_SYMBOL"
+   "[ \"\$(ncd 'EXPORT_SYMBOL(folio_alloc);' \"\$MP\")\" = 1 ]" "sem EXPORT_SYMBOL"
 ok "folio_alloc usa alloc_pages_current" \
    "grep -q 'alloc_pages_current(gfp | __GFP_COMP, order)' \"\$MP\"" \
    "nao usa o caminho de NUMA do E404"
@@ -78,7 +88,7 @@ ok "filemap_alloc_folio definido em filemap.c" \
    "grep -q '^struct folio \*filemap_alloc_folio(gfp_t gfp, unsigned int order)$' \"\$FL\"" \
    "esperava 1 definicao"
 ok "filemap_alloc_folio exportado" \
-   "grep -q 'EXPORT_SYMBOL(filemap_alloc_folio);' \"\$FL\"" "sem EXPORT_SYMBOL"
+   "[ \"\$(ncd 'EXPORT_SYMBOL(filemap_alloc_folio);' \"\$FL\")\" = 1 ]" "sem EXPORT_SYMBOL"
 ok "filemap_alloc_folio usa __folio_alloc_node no cpuset" \
    "grep -q 'folio = __folio_alloc_node(gfp, order, n);' \"\$FL\"" \
    "ainda usa __alloc_pages_node()"
@@ -106,14 +116,30 @@ ok "o wrapper tira o head, que e a page" \
    "grep -q 'static inline struct page \*__page_cache_alloc' \"\$PM\"" \
    "assinatura mudou"
 ok "o simbolo antigo nao e mais exportado" \
-   "[ \"\$(nc 'EXPORT_SYMBOL(__page_cache_alloc)' \"\$FL\")\" = 0 ]" \
+   "[ \"\$(ncd 'EXPORT_SYMBOL(__page_cache_alloc)' \"\$FL\")\" = 0 ]" \
    "ainda exporta o nome antigo"
 ok "page_cache_alloc continua usando o wrapper" \
    "grep -q 'return __page_cache_alloc(mapping_gfp_mask(x));' \"\$PM\"" \
    "page_cache_alloc mudou"
-ok "os dois callers de filemap.c seguem compilando" \
-   "[ \"\$(nc '__page_cache_alloc(' \"\$FL\")\" = 2 ]" \
-   "esperava os 2 usos em filemap.c"
+# --- por que estas contagens sao teto, e nao igualdade ---------------------
+#
+# Estas contagens medem quantos callers AINDA usam a API de page.  Como cada
+# estagio converte mais um deles, a contagem so pode BAIXAR de estagio para
+# estagio: o G2.5c tirou um caller de __page_cache_alloc, o G2.5d outro de
+# add_to_page_cache_lru e de find_get_entry, o G2.5e outro de
+# pagecache_get_page.  Exigir = N fazia a verificacao de um estagio falhar
+# assim que um estagio posterior era ligado, que e o uso normal.
+#
+# O que precisa valer e o TETO: nenhum caller novo pode aparecer usando a API
+# de page.  Um estagio posterior pode converter mais, o que so reduz a
+# contagem.  Daqui para frente e -le.
+#
+# As contagens em arquivos que nenhum estagio de folio toca -- mm/memcontrol.c
+# e fs/cachefiles/rdwr.c -- continuam exatas de proposito: ali a igualdade e
+# justamente a prova de que o estagio nao saiu de mm/filemap.c.
+ok "os callers de filemap.c seguem compilando" \
+   "[ \"\$(nc '__page_cache_alloc(' \"\$FL\")\" -le 2 ]" \
+   "o teto e 2: nenhum caller novo pode aparecer usando a API de page"
 if [ -f "$KERNEL_DIR/fs/cachefiles/rdwr.c" ]; then
     ok "os 2 callers de cachefiles seguem compilando" \
        "[ \"\$(nc '__page_cache_alloc(' \"\$KERNEL_DIR/fs/cachefiles/rdwr.c\")\" = 2 ]" \
@@ -147,7 +173,8 @@ ok "end_page_writeback do G2.4a segue inteiro" \
 ok "__folio_end_writeback do G2.4a segue inteiro" \
    "grep -q '__folio_end_writeback(folio)' \"\$FL\"" "sumiu"
 ok "workingset_refault do G2.4b segue por folio" \
-   "grep -q 'workingset_refault(page_folio(page), shadow);' \"\$FL\"" "voltou a passar struct page *"
+   "grep -q 'workingset_refault(\(folio\|page_folio(page)\), shadow);' \"\$FL\"" \
+   "voltou a passar struct page *; o G2.4b usava page_folio(page) e o G2.5d passou a ter o folio na mao"
 ok "o alocador de page continua intacto" \
    "grep -q '^__alloc_pages(gfp_t gfp_mask, unsigned int order, int preferred_nid)$' \"\$GFP\"" \
    "__alloc_pages() foi mexido"
