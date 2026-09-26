@@ -38,96 +38,31 @@ on:
         required: false
         type: boolean
         default: false
-      enable_folios_g1:
-        description: 'Integrar o shim G1 de folios Linux (opt-in; mTHP desativado)'
+      folio_stage:
+        description: 'Estagio de folios a integrar. Cada valor e cumulativo: aplica todos os anteriores. off = nao integrar.'
         required: false
-        type: boolean
-        default: false
-      enable_folios_g2:
-        description: 'Integrar o G2.1 de folios (refcount/get/put/RCU; opt-in)'
-        required: false
-        type: boolean
-        default: false
-      enable_folios_g22:
-        description: 'Integrar o G2.2a de folios (flags; header-only; opt-in)'
-        required: false
-        type: boolean
-        default: false
-      enable_folios_g22b:
-        description: 'Integrar o G2.2b de folios (LRU classic + private data; opt-in)'
-        required: false
-        type: boolean
-        default: false
-      enable_folios_g23a:
-        description: 'Integrar o G2.3a de folios (page cache index/mapping API; opt-in)'
-        required: false
-        type: boolean
-        default: false
-      enable_folios_g23b:
-        description: 'Integrar o G2.3b de folios (API de lock de folio; opt-in)'
-        required: false
-        type: boolean
-        default: false
-      enable_folios_g23c:
-        description: 'Integrar o G2.3c de folios (folio_end_writeback/rotate_reclaimable; opt-in)'
-        required: false
-        type: boolean
-        default: false
-      enable_folios_g23d:
-        description: 'Integrar o G2.3d de folios (folio_wait_bit API; opt-in)'
-        required: false
-        type: boolean
-        default: false
-      enable_folios_g23e:
-        description: 'Integrar o G2.3e de folios (folio_wake_bit; opt-in)'
-        required: false
-        type: boolean
-        default: false
-      enable_folios_g23f:
-        description: 'Integrar o G2.3f de folios (wait queues por folio, patch 29/90; opt-in)'
-        required: false
-        type: boolean
-        default: false
-      enable_folios_g24a:
-        description: 'Integrar o G2.4a de folios (__folio_end_writeback, patch 66/90; opt-in)'
-        required: false
-        type: boolean
-        default: false
-      enable_folios_g24b:
-        description: 'Integrar o G2.4b de folios (workingset_refault por folio, patch 80/90; opt-in)'
-        required: false
-        type: boolean
-        default: false
-      enable_folios_g25a:
-        description: 'Integrar o G2.5a de folios (folio_alloc e filemap_alloc_folio, patches 84/85; opt-in)'
-        required: false
-        type: boolean
-        default: false
-      enable_folios_g25b:
-        description: 'Integrar o G2.5b de folios (folio_add_lru e filemap_add_folio, patches 83/86; opt-in)'
-        required: false
-        type: boolean
-        default: false
-      enable_folios_g25c:
-        description: 'Integrar o G2.5c de folios (mapping_get_entry devolve folio, patch 87/90; opt-in)'
-        required: false
-        type: boolean
-        default: false
-      enable_folios_g25d:
-        description: 'Integrar o G2.5d de folios (filemap_get_folio, patch 88/90; opt-in)'
-        required: false
-        type: boolean
-        default: false
-      enable_folios_g25e:
-        description: 'Integrar o G2.5e de folios (FGP_STABLE, patch 89/90; opt-in)'
-        required: false
-        type: boolean
-        default: false
-      enable_folios_g25f:
-        description: 'Integrar o G2.5f de folios (folio_write_one, patch 90/90, ultimo da serie; opt-in)'
-        required: false
-        type: boolean
-        default: false
+        type: choice
+        default: 'off'
+        options:
+          - 'off'
+          - g1
+          - g2
+          - g22
+          - g22b
+          - g23a
+          - g23b
+          - g23c
+          - g23d
+          - g23e
+          - g23f
+          - g24a
+          - g24b
+          - g25a
+          - g25b
+          - g25c
+          - g25d
+          - g25e
+          - g25f
       droidspaces_profile:
         description: 'Perfil DroidSpaces (full recomendado; minimal; perfis cumulativos históricos)'
         required: true
@@ -325,7 +260,7 @@ jobs:
           echo "MGLRU_SUFFIX=-mglru" >> "$GITHUB_ENV"
 
       - name: Integrar folio G1 (type shim upstream, opt-in)
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g1 == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           echo "Aplicando o shim G1 de folios; mTHP permanece desabilitado..."
@@ -333,7 +268,7 @@ jobs:
           echo "FOLIO_SUFFIX=-folio-g1" >> "$GITHUB_ENV"
 
       - name: Integrar folio G2.1 (refcount/get/put/RCU, opt-in)
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g2 == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           echo "Aplicando o G2.1 de folios sobre o G1; page cache e mTHP continuam fora..."
@@ -341,7 +276,7 @@ jobs:
           echo "FOLIO_SUFFIX=-folio-g2" >> "$GITHUB_ENV"
 
       - name: Integrar folio G2.2a (flags, opt-in)
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g22 == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           echo "Aplicando o G2.2a de folios (page-flags.h) sobre o G2.1..."
@@ -349,7 +284,7 @@ jobs:
           echo "FOLIO_SUFFIX=-folio-g22" >> "$GITHUB_ENV"
 
       - name: Integrar folio G2.2b (LRU classic + private data, opt-in)
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g22b == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           echo "Aplicando o G2.2b de folios (LRU classic + private data)..."
@@ -357,7 +292,7 @@ jobs:
           echo "FOLIO_SUFFIX=-folio-g22b" >> "$GITHUB_ENV"
 
       - name: Integrar folio G2.3a (page cache index/mapping API, opt-in)
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23a == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           echo "Aplicando o G2.3a de folios (API de page cache)..."
@@ -365,7 +300,7 @@ jobs:
           echo "FOLIO_SUFFIX=-folio-g23a" >> "$GITHUB_ENV"
 
       - name: Integrar folio G2.3b (page lock API, opt-in)
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23b == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           echo "Aplicando o G2.3b de folios (API de lock de folio)..."
@@ -373,7 +308,7 @@ jobs:
           echo "FOLIO_SUFFIX=-folio-g23b" >> "$GITHUB_ENV"
 
       - name: Integrar folio G2.3c (folio end writeback, opt-in)
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23c == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           echo "Aplicando o G2.3c de folios (folio_end_writeback/rotate_reclaimable)..."
@@ -381,7 +316,7 @@ jobs:
           echo "FOLIO_SUFFIX=-folio-g23c" >> "$GITHUB_ENV"
 
       - name: Integrar folio G2.3d (folio_wait_bit API, opt-in)
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23d == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           echo "Aplicando o G2.3d de folios (folio_wait_bit)..."
@@ -389,7 +324,7 @@ jobs:
           echo "FOLIO_SUFFIX=-folio-g23d" >> "$GITHUB_ENV"
 
       - name: Integrar folio G2.3e (folio_wake_bit, opt-in)
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23e == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           echo "Aplicando o G2.3e de folios (folio_wake_bit)..."
@@ -397,7 +332,7 @@ jobs:
           echo "FOLIO_SUFFIX=-folio-g23e" >> "$GITHUB_ENV"
 
       - name: Integrar folio G2.3f (wait queues por folio, opt-in)
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23f == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           echo "Aplicando o G2.3f de folios (patch 29/90, wait queues por folio)..."
@@ -405,7 +340,7 @@ jobs:
           echo "FOLIO_SUFFIX=-folio-g23f" >> "$GITHUB_ENV"
 
       - name: Integrar folio G2.4a (__folio_end_writeback, opt-in)
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g24a == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           echo "Aplicando o G2.4a de folios (patch 66/90, __folio_end_writeback)..."
@@ -413,7 +348,7 @@ jobs:
           echo "FOLIO_SUFFIX=-folio-g24a" >> "$GITHUB_ENV"
 
       - name: Integrar folio G2.4b (workingset_refault por folio, opt-in)
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g24b == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           echo "Aplicando o G2.4b de folios (patch 80/90, workingset_refault por folio)..."
@@ -421,7 +356,7 @@ jobs:
           echo "FOLIO_SUFFIX=-folio-g24b" >> "$GITHUB_ENV"
 
       - name: Integrar folio G2.5a (filemap_alloc_folio, opt-in)
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25a == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b","g25a"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           echo "Aplicando o G2.5a de folios (patches 84/90 e 85/90, alocacao de folio)..."
@@ -429,7 +364,7 @@ jobs:
           echo "FOLIO_SUFFIX=-folio-g25a" >> "$GITHUB_ENV"
 
       - name: Integrar folio G2.5b (filemap_add_folio, opt-in)
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25b == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b","g25a","g25b"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           echo "Aplicando o G2.5b de folios (patches 83/90 e 86/90, insercao no page cache por folio)..."
@@ -437,7 +372,7 @@ jobs:
           echo "FOLIO_SUFFIX=-folio-g25b" >> "$GITHUB_ENV"
 
       - name: Integrar folio G2.5c (mapping_get_entry por folio, opt-in)
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25c == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b","g25a","g25b","g25c"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           echo "Aplicando o G2.5c de folios (patch 87/90, mapping_get_entry devolve folio)..."
@@ -445,7 +380,7 @@ jobs:
           echo "FOLIO_SUFFIX=-folio-g25c" >> "$GITHUB_ENV"
 
       - name: Integrar folio G2.5d (filemap_get_folio, opt-in)
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25d == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b","g25a","g25b","g25c","g25d"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           echo "Aplicando o G2.5d de folios (patch 88/90, filemap_get_folio e folio_mark_accessed)..."
@@ -453,7 +388,7 @@ jobs:
           echo "FOLIO_SUFFIX=-folio-g25d" >> "$GITHUB_ENV"
 
       - name: Integrar folio G2.5e (FGP_STABLE, opt-in)
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25e == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b","g25a","g25b","g25c","g25d","g25e"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           echo "Aplicando o G2.5e de folios (patch 89/90, FGP_STABLE e folio_wait_stable)..."
@@ -461,7 +396,7 @@ jobs:
           echo "FOLIO_SUFFIX=-folio-g25e" >> "$GITHUB_ENV"
 
       - name: Integrar folio G2.5f (folio_write_one, opt-in)
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25f == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b","g25a","g25b","g25c","g25d","g25e","g25f"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           echo "Aplicando o G2.5f de folios (patch 90/90, folio_write_one e folio_clear_dirty_for_io)..."
@@ -843,7 +778,7 @@ jobs:
           echo 'MGLRU validado no .config final.'
 
       - name: Validar folio G1 no kernel
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g1 == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           grep -q 'struct folio' kernel/include/linux/mm_types.h
@@ -854,7 +789,7 @@ jobs:
           echo 'Folio G1 validado; mTHP continua desabilitado.'
 
       - name: Validar folio G2.1 no kernel
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g2 == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           grep -q 'folio_ref_count' kernel/include/linux/page_ref.h
@@ -866,7 +801,7 @@ jobs:
           echo 'Folio G2.1 validado; page cache, flags e mTHP continuam fora.'
 
       - name: Validar folio G2.2a no kernel
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g22 == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           F=kernel/include/linux/page-flags.h
@@ -880,7 +815,7 @@ jobs:
           echo 'Folio G2.2a validado; somente page-flags.h foi alterado.'
 
       - name: Validar folio G2.2b no kernel
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g22b == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           L=kernel/include/linux/mm_inline.h
@@ -898,7 +833,7 @@ jobs:
           echo 'Folio G2.2b validado; callers ainda nao convertidos.'
 
       - name: Validar folio G2.3a no kernel
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23a == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           P=kernel/include/linux/pagemap.h
@@ -915,7 +850,7 @@ jobs:
           echo 'Folio G2.3a validado; page_mapping() e __page_file_mapping() intactos.'
 
       - name: Validar folio G2.3b no kernel
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23b == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           P=kernel/include/linux/pagemap.h
@@ -935,7 +870,7 @@ jobs:
           echo 'Folio G2.3b validado; caminho de lock de pagina intacto.'
 
       - name: Validar folio G2.3c no kernel
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23c == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           grep -q 'void folio_rotate_reclaimable' kernel/mm/swap.c
@@ -949,7 +884,7 @@ jobs:
           echo 'Folio G2.3c validado; caminhos de pagina intactos.'
 
       - name: Validar folio G2.3d no kernel
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23d == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           F=kernel/mm/filemap.c
@@ -964,7 +899,7 @@ jobs:
           echo 'Folio G2.3d validado; wait_on_page_bit() intacto.'
 
       - name: Validar folio G2.3e no kernel
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23e == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           F=kernel/mm/filemap.c
@@ -975,7 +910,7 @@ jobs:
           echo 'Folio G2.3e validado; wake_up_page_bit() intacto.'
 
       - name: Validar folio G2.3f no kernel
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g23f == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f"]'), github.event.inputs.folio_stage))
         run: |
           bash folio/verify-g23f.sh kernel
 
@@ -983,7 +918,7 @@ jobs:
           echo 'Folio G2.3f validado; wait_page_key/wait_page_queue em folios, caminho de page intacto.'
 
       - name: Validar folio G2.4a no kernel
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g24a == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           bash folio/verify-g24a.sh kernel
@@ -992,7 +927,7 @@ jobs:
           echo 'Folio G2.4a validado; end_page_writeback() e folio_end_writeback() convergem para __folio_end_writeback().'
 
       - name: Validar folio G2.4b no kernel
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g24b == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           bash folio/verify-g24b.sh kernel
@@ -1001,7 +936,7 @@ jobs:
           echo 'Folio G2.4b validado; workingset_refault() por folio, caminho do MGLRU intacto.'
 
       - name: Validar folio G2.5a no kernel
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25a == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b","g25a"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           bash folio/verify-g25a.sh kernel
@@ -1010,7 +945,7 @@ jobs:
           echo 'Folio G2.5a validado; filemap_alloc_folio() presente, __page_cache_alloc() como wrapper.'
 
       - name: Validar folio G2.5b no kernel
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25b == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b","g25a","g25b"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           bash folio/verify-g25b.sh kernel
@@ -1019,7 +954,7 @@ jobs:
           echo 'Folio G2.5b validado; filemap_add_folio() e folio_add_lru() presentes, callers de page intactos.'
 
       - name: Validar folio G2.5c no kernel
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25c == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b","g25a","g25b","g25c"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           bash folio/verify-g25c.sh kernel
@@ -1028,7 +963,7 @@ jobs:
           echo 'Folio G2.5c validado; mapping_get_entry() devolve folio, find_get_entry() como wrapper.'
 
       - name: Validar CONFIG_TINY_RCU para o G2.5c
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25c == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b","g25a","g25b","g25c"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           F=kernel/out/.config
@@ -1041,7 +976,7 @@ jobs:
           echo 'G2.5c: CONFIG_TINY_RCU desligado, a equivalencia de page_ref vale.'
 
       - name: Validar folio G2.5d no kernel
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25d == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b","g25a","g25b","g25c","g25d"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           bash folio/verify-g25d.sh kernel
@@ -1050,7 +985,7 @@ jobs:
           echo 'Folio G2.5d validado; __filemap_get_folio() e filemap_get_folio() novos, pagecache_get_page() e mark_page_accessed() como wrappers.'
 
       - name: Validar a ABI do vendor no G2.5d
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25d == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b","g25a","g25b","g25c","g25d"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           # Aqui a arvore do kernel esta completa, ao contrario da arvore de
@@ -1069,7 +1004,7 @@ jobs:
           echo 'G2.5d: a ABI do vendor continua satisfeita; pagecache_get_page segue exportado.'
 
       - name: Validar folio G2.5e no kernel
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25e == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b","g25a","g25b","g25c","g25d","g25e"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           bash folio/verify-g25e.sh kernel
@@ -1087,7 +1022,7 @@ jobs:
           echo 'Folio G2.5e validado; FGP_STABLE e folio_wait_stable novos, e os 8 verifies passam na arvore acumulada.'
 
       - name: Validar folio G2.5f no kernel
-        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25f == 'true')
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b","g25a","g25b","g25c","g25d","g25e","g25f"]'), github.event.inputs.folio_stage))
         run: |
           set -euo pipefail
           bash folio/verify-g25f.sh kernel

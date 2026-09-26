@@ -72,9 +72,15 @@ Nenhum estagio converte callers ainda: as APIs `folio_*` existem e sao
 validadas em tempo de compilacao, mas a conversao real acontece nos estagios
 seguintes.
 
-O workflow aplica G1, G2.1 e G2.2a somente quando `enable_folios_g22=true`;
-`enable_folios_g2=true` valida apenas G1+G2.1 e `enable_folios_g1=true`
-valida apenas G1.
+### Como escolher o estágio no CI
+
+O workflow tem um único input de folio, `folio_stage`, com os valores `off`,
+`g1`, `g2`, `g22` … `g25f`. Cada valor é cumulativo: `folio_stage: g25f` aplica
+G1 até G2.5f, e `folio_stage: g22` aplica G1, G2.1 e G2.2a. O padrão é `off`,
+então um build sem escolher nada não integra folios.
+
+Isso substitui os 18 booleanos `enable_folios_*` que existiam antes. Ver a
+seção "O teto de inputs do GitHub" para o motivo.
 
 ## Endurecimento da suite de verificacao
 
@@ -118,20 +124,30 @@ deixou o `page_folio()` de fora porque o caller ja tem o folio na mao. A
 invariante que importa continua verificada a parte: nenhum caller passa
 `struct page *`.
 
-### O workflow está no teto de inputs do GitHub
+### O teto de inputs do GitHub
 
 `workflow_dispatch` aceita no máximo 25 inputs. Com os 18 booleanos de folio mais
-os 8 de MGLRU, KSU/SUSFS, DroidSpaces e `force_build`, o workflow chegou a 26 e
-o dispatch passou a responder `HTTP 422`. O input `custom_boot_url` foi removido
-para voltar a 25; o `boot.img` base passa a vir sempre do Alioth AOSP, e o outro
-workflow do repositório, `build-kernel.yml`, ainda tem o input.
+os 8 de MGLRU, KSU/SUSFS, DroidSpaces e `force_build`, o workflow chegou a 26 e o
+dispatch do G2.5f respondeu `HTTP 422` antes de começar. Duas coisas resolveram:
 
-Isso significa que **o próximo estágio de folio não cabe** sem antes consolidar.
-A consolidação natural é trocar os 18 booleanos por um único input de escolha
-`folio_stage`, com valores `off`, `g1`, `g2`, `g22` … `g25f`: os estágios são
-cumulativos, então "até o estágio N" é a única escolha que significa alguma coisa,
-e 17 booleanos estão expressing a mesma coisa 17 vezes. Fica registrado aqui
-para o próximo não bater no mesmo muro.
+1. O input `custom_boot_url` saiu. O `boot.img` base passa a vir sempre do Alioth
+   AOSP; o outro workflow do repositório, `build-kernel.yml`, ainda tem o input.
+
+2. Os 18 booleanos viraram um único `folio_stage` de escolha, com valores `off`,
+   `g1`, `g2`, `g22` … `g25f`. Os estágios são cumulativos, então "até o estágio
+   N" é a única escolha que significa alguma coisa, e 18 booleanos estavam
+   expressando a mesma coisa 18 vezes.
+
+O workflow ficou com **7 inputs**, então sobraram 18 slots: dá para adicionar
+estágios sem bater no mesmo muro.
+
+A condição de cada estágio é um `contains(fromJSON('['...']'), folio_stage)` com a
+lista **explícita** dos estágios até ele, e não uma comparação de índice. Lista
+explícita tem uma propriedade que ordem numérica não tem: um nome de estágio
+digitado errado simplesmente nunca casa, enquanto um off-by-one na sequência liga
+o estágio errado sem ninguém perceber. A verificação confere que cada lista é o
+prefixo exato e que `off` não está em nenhuma delas, que é o que garante que o
+padrão não integra folios.
 
 ### Como isso e testado
 
@@ -871,8 +887,8 @@ Adaptações específicas do E404:
 
 Nenhum caller é convertido neste estágio.
 
-O workflow aplica G1 -> G2.1 -> G2.2a -> G2.2a quando
-`enable_folios_g22b=true`.
+O workflow aplica G1 -> G2.1 -> G2.2a -> G2.2b quando
+`folio_stage: g22b`.
 
 A base exata do patch e o commit E404
 `ca410e68b6aa31efca73bbec288ef1ed671701f6`.
