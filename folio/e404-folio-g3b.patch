@@ -1,0 +1,196 @@
+From: Codex folio backport <codex@local>
+Subject: [PATCH] E404 folio G3b: geometria e page_mkclean por folio (upstream 52/90, 53/90 e 59/90)
+
+Terceira camada do G3.  Estes tres patches sao a geometria de que o THP vai
+precisar: quantas paginas um folio cobre, como obter o mapeamento cru pelo folio,
+e o caminho de limpeza de dirty.
+
+52/90, folio_raw_mapping():
+
+  O upstream poe a funcao como static inline em mm/internal.h.  Nao pode ir la
+  nesta arvore: PAGE_MAPPING_FLAGS nao e visivel em mm/internal.h, que nao inclui
+  mm_types.h.  A forma do E404 para um helper assim e static inline em
+  mm/util.c, ao lado de __page_rmapping(), que faz a mesma conta.  page_rmapping()
+  e page_anon_vma() passam a usar o folio, e __page_rmapping() continua onde
+  estava.
+
+53/90, flush_dcache_folio():
+
+  O upstream declara a funcao generica em asm-generic/cacheflush.h e poe a
+  implementacao com laco em mm/util.c, protegido por
+  ARCH_IMPLEMENTS_FLUSH_DCACHE_FOLIO.  No arm64 do E404,
+  ARCH_IMPLEMENTS_FLUSH_DCACHE_PAGE e 0 e flush_dcache_page(page) e um no-op: a
+  coerencia de cache e feita por hardware.  A forma correta aqui e a mesma que o
+  proprio upstream usa no ramo XTENSA -- declarar que a arquitetura implementa e
+  dar um inline vazio -- em vez do laco que chamaria um no-op N vezes.
+  mm/util.c nao e tocado por este patch.
+
+59/90, folio_mkclean():
+
+  page_mkclean() vira folio_mkclean() e a versao de page fica como wrapper em
+  include/linux/rmap.h, como no upstream.  Duas divergencias:
+
+  - O corpo fica na forma do E404.  O upstream usa struct rmap_walk_walk porque
+    o 5.16 unificou os dois walkers; no 4.19 sao dois tipos distintos, e
+    page_mkclean() usa struct rmap_walk_control, com .arg, .rmap_one e
+    .invalid_vma.  Os tres inicializadores sao preservados.
+
+  - O upstream chama folio_mapped(folio), e o E404 nao tem folio_mapped -- o
+    G2.3a criou folio_mapping, que e outra coisa.  A forma do E404 e
+    page_mapped(&folio->page), que ja sabe percorrer as subpaginas de um
+    composto, que e o que um folio e.
+
+  page_mkclean() tem um caller em mm/page-writeback.c, e ele continua chamando
+  pelo wrapper.
+
+diff --git a/include/asm-generic/cacheflush.h b/include/asm-generic/cacheflush.h
+index 0dd47a6..7e77fc3 100644
+--- a/include/asm-generic/cacheflush.h
++++ b/include/asm-generic/cacheflush.h
+@@ -16,6 +16,14 @@
+ #define flush_cache_page(vma, vmaddr, pfn)	do { } while (0)
+ #define ARCH_IMPLEMENTS_FLUSH_DCACHE_PAGE 0
+ #define flush_dcache_page(page)			do { } while (0)
++/*
++ * Upstream patch 52/90.  flush_dcache_page() e um no-op no arm64, e
++ * flush_dcache_folio() tem de ser tambem: um laco que chamasse o no-op
++N vezes seria trabalho inutil em tempo de execuco.  Este e o
++ * mesmo ramo que o upstream usa na XTENSA.
++ */
++#define ARCH_IMPLEMENTS_FLUSH_DCACHE_FOLIO 1
++static inline void flush_dcache_folio(struct folio *folio) { }
+ #define flush_dcache_mmap_lock(mapping)		do { } while (0)
+ #define flush_dcache_mmap_unlock(mapping)	do { } while (0)
+ #define flush_icache_range(start, end)		do { } while (0)
+diff --git a/include/linux/rmap.h b/include/linux/rmap.h
+index 7121bdd..98797b7 100644
+--- a/include/linux/rmap.h
++++ b/include/linux/rmap.h
+@@ -240,7 +240,7 @@ unsigned long page_address_in_vma(struct page *, struct vm_area_struct *);
+  *
+  * returns the number of cleaned PTEs.
+  */
+-int page_mkclean(struct page *);
++int folio_mkclean(struct folio *);
+ 
+ /*
+  * called in munlock()/munmap() path to check for other vmas holding
+@@ -305,7 +305,7 @@ static inline int page_referenced(struct page *page, int is_locked,
+ 
+ #define try_to_unmap(page, refs) false
+ 
+-static inline int page_mkclean(struct page *page)
++static inline int folio_mkclean(struct folio *folio)
+ {
+ 	return 0;
+ }
+@@ -313,4 +313,14 @@ static inline int page_mkclean(struct page *page)
+ 
+ #endif	/* CONFIG_MMU */
+ 
++/*
++ * Upstream patch 59/90: o wrapper fica fora do #endif de proposito.  Com MMU
++ * folio_mkclean() e a funcao de verdade; sem MMU e o stub acima.  Nos dois
++ * casos page_mkclean() delega para uma definicao que existe.
++ */
++static inline int page_mkclean(struct page *page)
++{
++	return folio_mkclean(page_folio(page));
++}
++
+ #endif	/* _LINUX_RMAP_H */
+diff --git a/mm/rmap.c b/mm/rmap.c
+index a0ca26f..6d2a8c5 100644
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -977,7 +977,7 @@ static bool invalid_mkclean_vma(struct vm_area_struct *vma, void *arg)
+ 	return true;
+ }
+ 
+-int page_mkclean(struct page *page)
++int folio_mkclean(struct folio *folio)
+ {
+ 	int cleaned = 0;
+ 	struct address_space *mapping;
+@@ -987,20 +987,25 @@ int page_mkclean(struct page *page)
+ 		.invalid_vma = invalid_mkclean_vma,
+ 	};
+ 
+-	BUG_ON(!PageLocked(page));
++	BUG_ON(!folio_test_locked(folio));
+ 
+-	if (!page_mapped(page))
++	/*
++	 * page_mapped(&folio->page), nao folio_mapped(folio): o E404 nao tem
++	 * folio_mapped, e page_mapped() ja sabe percorrer as subpaginas de um
++	 * composto, que e o que um folio e.
++	 */
++	if (!page_mapped(&folio->page))
+ 		return 0;
+ 
+-	mapping = page_mapping(page);
++	mapping = folio_mapping(folio);
+ 	if (!mapping)
+ 		return 0;
+ 
+-	rmap_walk(page, &rwc);
++	rmap_walk(&folio->page, &rwc);
+ 
+ 	return cleaned;
+ }
+-EXPORT_SYMBOL_GPL(page_mkclean);
++EXPORT_SYMBOL_GPL(folio_mkclean);
+ 
+ /**
+  * page_move_anon_rmap - move a page to our anon_vma
+diff --git a/mm/util.c b/mm/util.c
+index b5b2d40..7b9dee6 100644
+--- a/mm/util.c
++++ b/mm/util.c
+@@ -489,6 +489,19 @@ void kvfree_sensitive(const void *addr, size_t len)
+ }
+ EXPORT_SYMBOL(kvfree_sensitive);
+ 
++/*
++ * Upstream patch 52/90, que poe isto em mm/internal.h.  No pode ir la
++ * nesta arvore: PAGE_MAPPING_FLAGS nao e visivel em mm/internal.h, que nao
++ * inclui mm_types.h.  A forma do E404 para um helper assim e static inline
++ * em mm/util.c, ao lado de __page_rmapping(), que faz a mesma conta.
++ */
++static inline void *folio_raw_mapping(struct folio *folio)
++{
++	unsigned long mapping = (unsigned long)folio->mapping;
++
++	return (void *)(mapping & ~PAGE_MAPPING_FLAGS);
++}
++
+ static inline void *__page_rmapping(struct page *page)
+ {
+ 	unsigned long mapping;
+@@ -502,8 +515,7 @@ static inline void *__page_rmapping(struct page *page)
+ /* Neutral page->mapping pointer to address_space or anon_vma or other */
+ void *page_rmapping(struct page *page)
+ {
+-	page = compound_head(page);
+-	return __page_rmapping(page);
++	return folio_raw_mapping(page_folio(page));
+ }
+ 
+ /*
+@@ -531,13 +543,12 @@ EXPORT_SYMBOL(page_mapped);
+ 
+ struct anon_vma *page_anon_vma(struct page *page)
+ {
+-	unsigned long mapping;
++	struct folio *folio = page_folio(page);
++	unsigned long mapping = (unsigned long)folio->mapping;
+ 
+-	page = compound_head(page);
+-	mapping = (unsigned long)page->mapping;
+ 	if ((mapping & PAGE_MAPPING_FLAGS) != PAGE_MAPPING_ANON)
+ 		return NULL;
+-	return __page_rmapping(page);
++	return (void *)(mapping - PAGE_MAPPING_ANON);
+ }
+ 
+ struct address_space *page_mapping(struct page *page)

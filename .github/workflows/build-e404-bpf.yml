@@ -64,6 +64,7 @@ on:
           - g25e
           - g25f
           - g3a
+          - g3b
       droidspaces_profile:
         description: 'Perfil DroidSpaces (full recomendado; minimal; perfis cumulativos históricos)'
         required: true
@@ -411,6 +412,14 @@ jobs:
           echo "Aplicando o G3a de folios (patches 51/90 e 63/90)..."
           bash folio/apply-g3a.sh kernel
           echo "FOLIO_SUFFIX=-folio-g3a" >> "$GITHUB_ENV"
+
+      - name: Integrar folio G3b (geometria e folio_mkclean, opt-in)
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b","g25a","g25b","g25c","g25d","g25e","g25f","g3a","g3b"]'), github.event.inputs.folio_stage))
+        run: |
+          set -euo pipefail
+          echo "Aplicando o G3b de folios (patches 52/90, 53/90 e 59/90)..."
+          bash folio/apply-g3b.sh kernel
+          echo "FOLIO_SUFFIX=-folio-g3b" >> "$GITHUB_ENV"
 
       - name: Checkout KernelSU-Next legacy (UAPI 2)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false') && (inputs.ksu_stack == 'legacy-susfs2-experimental')
@@ -1067,6 +1076,23 @@ jobs:
           done
           echo 'Folio G3a validado; folio_pfn() nova e __add_wb_stat() renomeada, e os 10 verifies passam.'
 
+      - name: Validar folio G3b no kernel
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b","g25a","g25b","g25c","g25d","g25e","g25f","g3a","g3b"]'), github.event.inputs.folio_stage))
+        run: |
+          set -euo pipefail
+          bash folio/verify-g3b.sh kernel
+
+          test -z "$(find kernel -type f -name '*.rej' -print -quit)"
+          test ! -e kernel/mm/folio-compat.c
+          # A forma do walker do E404 e invariante: o 4.19 tem dois walkers e
+          # o upstream 5.16 usa rmap_walk_walk, que nao existe aqui.
+          grep -q 'struct rmap_walk_control rwc = {' kernel/mm/rmap.c
+          for v in g23f g24a g24b g25a g25b g25c g25d g25e g25f g3a; do
+            echo "Rodando folio/verify-$v.sh na arvore acumulada..."
+            bash "folio/verify-$v.sh" kernel
+          done
+          echo 'Folio G3b validado; geometria de folio e folio_mkclean(), e os 11 verifies passam.'
+
       - name: Compilar Kernel (Image, dtbs, dtbo.img)
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |
@@ -1214,7 +1240,9 @@ jobs:
           else
             MGLRU_STATUS="Desativado (baseline preservado)"
           fi
-          if [ "$FOLIO_SUFFIX" = "-folio-g3a" ]; then
+          if [ "$FOLIO_SUFFIX" = "-folio-g3b" ]; then
+            FOLIO_STATUS="G3b ativado (patches 52/90, 53/90 e 59/90: folio_raw_mapping() e flush_dcache_folio() novas, folio_mkclean() por folio com page_mkclean() como wrapper; formas do E404 preservadas, rmap_walk_control e nao rmap_walk_walk)"
+          elif [ "$FOLIO_SUFFIX" = "-folio-g3a" ]; then
             FOLIO_STATUS="G3a ativado (patches 51/90 e 63/90: folio_pfn() nova, __add_wb_stat() renomeada para wb_stat_mod(); primeira camada do G3, a base para THP em pagina de arquivo)"
           elif [ "$FOLIO_SUFFIX" = "-folio-g25f" ]; then
             FOLIO_STATUS="G2.5f ativado (patch 90/90, ultimo da serie folio-5.16: folio_write_one e folio_clear_dirty_for_io; folio_wait_writeback novo; write_one_page e clear_page_dirty_for_io preservados como wrappers; a declaracao de write_one_page fica em mm.h porque 5 dos 9 callers in-tree nao incluem pagemap.h)"
