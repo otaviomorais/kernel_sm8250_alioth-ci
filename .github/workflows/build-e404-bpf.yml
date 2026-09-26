@@ -123,6 +123,11 @@ on:
         required: false
         type: boolean
         default: false
+      enable_folios_g25f:
+        description: 'Integrar o G2.5f de folios (folio_write_one, patch 90/90, ultimo da serie; opt-in)'
+        required: false
+        type: boolean
+        default: false
       droidspaces_profile:
         description: 'Perfil DroidSpaces (full recomendado; minimal; perfis cumulativos históricos)'
         required: true
@@ -459,6 +464,14 @@ jobs:
           echo "Aplicando o G2.5e de folios (patch 89/90, FGP_STABLE e folio_wait_stable)..."
           bash folio/apply-g25e.sh kernel
           echo "FOLIO_SUFFIX=-folio-g25e" >> "$GITHUB_ENV"
+
+      - name: Integrar folio G2.5f (folio_write_one, opt-in)
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25f == 'true')
+        run: |
+          set -euo pipefail
+          echo "Aplicando o G2.5f de folios (patch 90/90, folio_write_one e folio_clear_dirty_for_io)..."
+          bash folio/apply-g25f.sh kernel
+          echo "FOLIO_SUFFIX=-folio-g25f" >> "$GITHUB_ENV"
 
       - name: Checkout KernelSU-Next legacy (UAPI 2)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false') && (inputs.ksu_stack == 'legacy-susfs2-experimental')
@@ -1078,6 +1091,29 @@ jobs:
           done
           echo 'Folio G2.5e validado; FGP_STABLE e folio_wait_stable novos, e os 8 verifies passam na arvore acumulada.'
 
+      - name: Validar folio G2.5f no kernel
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25f == 'true')
+        run: |
+          set -euo pipefail
+          bash folio/verify-g25f.sh kernel
+
+          test -z "$(find kernel -type f -name '*.rej' -print -quit)"
+          test ! -e kernel/mm/folio-compat.c
+          # write_one_page tem 9 callers in-tree, um deles o driver block2mtd, e
+          # a declaracao fica em include/linux/mm.h porque cinco desses callers
+          # nao incluem linux/pagemap.h.  Nem o simbolo nem a declaracao podem
+          # ter mudado de lugar.
+          grep -q 'EXPORT_SYMBOL(write_one_page);' kernel/mm/page-writeback.c
+          grep -q '^int __must_check write_one_page(struct page \*page);$' kernel/include/linux/mm.h
+          ! grep -q 'write_one_page' kernel/include/linux/pagemap.h
+          # Os outros verifies rodam tambem, e nao so o do estagio, para pegar
+          # asercao que envelheceu com o estagio novo.
+          for v in g23f g24a g24b g25a g25b g25c g25d g25e; do
+            echo "Rodando folio/verify-$v.sh na arvore acumulada..."
+            bash "folio/verify-$v.sh" kernel
+          done
+          echo 'Folio G2.5f validado; ultimo patch da serie, e os 9 verifies passam na arvore acumulada.'
+
       - name: Compilar Kernel (Image, dtbs, dtbo.img)
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |
@@ -1227,7 +1263,9 @@ jobs:
           else
             MGLRU_STATUS="Desativado (baseline preservado)"
           fi
-          if [ "$FOLIO_SUFFIX" = "-folio-g25e" ]; then
+          if [ "$FOLIO_SUFFIX" = "-folio-g25f" ]; then
+            FOLIO_STATUS="G2.5f ativado (patch 90/90, ultimo da serie folio-5.16: folio_write_one e folio_clear_dirty_for_io; folio_wait_writeback novo; write_one_page e clear_page_dirty_for_io preservados como wrappers; a declaracao de write_one_page fica em mm.h porque 5 dos 9 callers in-tree nao incluem pagemap.h)"
+          elif [ "$FOLIO_SUFFIX" = "-folio-g25e" ]; then
             FOLIO_STATUS="G2.5e ativado (patch 89/90: FGP_STABLE 0x200, filemap_get_folio pode esperar o folio ficar estavel; folio_wait_stable nova; wait_for_stable_page e grab_cache_page_write_begin preservados; grab_cache_page_write_begin segue exportado para os filesystems do vendor)"
           elif [ "$FOLIO_SUFFIX" = "-folio-g25d" ]; then
             FOLIO_STATUS="G2.5d ativado (patch 88/90: __filemap_get_folio, filemap_get_folio, folio_mark_accessed; pagecache_get_page e mark_page_accessed preservados como wrappers, pagecache_get_page segue exportado por causa da ABI do vendor)"

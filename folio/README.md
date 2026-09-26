@@ -101,6 +101,89 @@ Os scripts rodam em bash 5.3 de verdade, nao em um espelho em PowerShell. O
 precisa de uma juncao para|area de trabalho e de uma copia dele mesmo nomeada
 `bash.exe`, porque os scripts de apply chamam `bash "$SCRIPT_DIR/apply-gNNN.sh"`.
 
+## G2.5f
+
+`e404-folio-g2.5f.patch` aplica, sobre o G2.5e, o patch upstream 90/90
+(`mm/writeback: Add folio_write_one`). É o último da série `folio-5.16`.
+
+`write_one_page()` vira `folio_write_one()`, e `clear_page_dirty_for_io()` vira
+`folio_clear_dirty_for_io()` com a versão de page como wrapper.
+`folio_wait_writeback()` entra como `static inline` ao lado de
+`wait_on_page_writeback()`.
+
+O `write_one_page()` do E404 era byte a byte o do 5.16 que este patch reescreve,
+então o hunk portou direto. As três coisas que mudam de verdade são
+`.nr_to_write`, que passa a ser a contagem de páginas do folio, e os dois
+helpers. O ponteiro de `writepage()` ainda toma `struct page *`, então a chamada
+passa `&folio->page`.
+
+### Por que `write_one_page` continua sendo função real
+
+O upstream vira-o `static inline` em `pagemap.h` e julga que a economia não
+compensa um wrapper no core. Aqui há duas razones medidas, não adivinhadas:
+
+- São **nove callers in-tree**, um deles o driver `block2mtd`. Tirar o símbolo
+  quebraria qualquer coisa que não recompilasse contra o header novo.
+- **Cinco dos nove** — `fs/jfs`, `fs/minix`, `fs/ufs`, `fs/exofs` e `fs/ocfs2` —
+  não incluem `linux/pagemap.h`. Mover a declaração para lá, como o upstream faz,
+  **não compilaria**.
+
+O símbolo não está em `android/abi_gki_aarch64_qcom`, então nenhuma promessa de
+ABI está sendo quebrada ao mantê-lo. A razão são os callers, não a lista de ABI.
+
+`task_dirty_inc()` continua em `mm.h`. O upstream remove essa linha no mesmo
+hunk porque o patch 75/90 já tinha movido a declaração, e o 75/90 não faz parte
+deste backport.
+
+### `folio_clear_dirty_for_io` é parte do patch 74/90
+
+O 90/90 precisa dela, e o 74/90 sozinho só entregaria um helper sem uso. O corpo
+é o do E404 com a page trocada pelo folio que a head, o que preserva três
+grafias que o 5.16 escreve diferente:
+
+- `mapping_can_writeback()` é `mapping_cap_account_dirty()`.
+- A contabilidade continua na page: `dec_lruvec_page_state()` e
+  `dec_zone_page_state()` são os nomes do E404, e a primeira toma `struct page *`,
+  não o `struct lruvec *` que o `dec_lruvec_state()` desta árvore toma.
+- `set_page_dirty(&folio->page)`, e **não** `folio_mark_dirty(folio)`. Este é o
+  ponto que mudaria comportamento em silêncio. O `folio_mark_dirty()` do 5.16
+  carrega os efeitos colaterais que a chamada existe para ter, e o comentário do
+  próprio E404 diz isso explicitamente. O `folio_set_dirty()` que o macro
+  `PAGEFLAG(Dirty)` gera é um `set_bit()` puro: usá-lo perderia a tag dirty do
+  xarray, o timestamp e a contabilidade de writeback, sem nenhum erro de
+  compilação para denunciar.
+
+O tipo de retorno é `int`, e não `bool`, para que `clear_page_dirty_for_io()`
+mantenha a assinatura que já exporta.
+
+### `folio_wait_stable` não foi mexido
+
+O `folio_wait_stable()` do G2.5e continua escrevendo o próprio pré-check em vez
+de chamar o `folio_wait_writeback()` novo. O upstream também escreve o dele, e
+deixar um estágio já verificado intacto vale mais aqui do que remover duas linhas
+duplicadas. O `verify-g25f.sh` afirma isso explicitamente, para que uma
+refatoração futura não reposicione a verificação sem perceber.
+
+### Onde a série parou
+
+Com o G2.5f, o que está portado da série de 90 patches:
+
+| patches | estágio |
+| --- | --- |
+| 1–37 | G1, G2.1, G2.2a, G2.2b, G2.3a–G2.3f |
+| 38–48 | **pulados**: exigiriam backportar `obj_cgroup`/`memcg_data` |
+| 49–65 | **pulados**: família de vmstat do upstream (`wb_stat_mod`, `__fprop_add_percpu_max`) |
+| 66 | G2.4a |
+| 67–79 | **pulados**: `filemap_dirty_folio()` e a família de redirty |
+| 80 | G2.4b |
+| 81–82 | **pulados**: `folio_evictable()` e `__pagevec_lru_add_fn` |
+| 83–89 | G2.5a–G2.5e |
+| 90 | G2.5f |
+
+Os pulos não são omissão: cada um foi medido antes de ser decidido, e o motivo
+está no README. O que falta é a família de writeback por folio (67–79) e os dois
+patches de LRU (81–82), que são os candidatos naturais para a próxima rodada.
+
 ## G2.5e
 
 `e404-folio-g2.5e.patch` aplica, sobre o G2.5d, o patch upstream 89/90
