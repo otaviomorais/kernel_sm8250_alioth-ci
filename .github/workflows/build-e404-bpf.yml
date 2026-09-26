@@ -993,6 +993,19 @@ jobs:
           test -z "$(find kernel -type f -name '*.rej' -print -quit)"
           echo 'Folio G2.5c validado; mapping_get_entry() devolve folio, find_get_entry() como wrapper.'
 
+      - name: Validar CONFIG_TINY_RCU para o G2.5c
+        if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_folios_g25c == 'true')
+        run: |
+          set -euo pipefail
+          F=kernel/out/.config
+          [ -f "$F" ] || { echo "FATAL: .config ainda nao existe neste ponto"; exit 1; }
+          # folio_try_get_rcu() so equivale a page_cache_get_speculative()
+          # no caminho sem TINY_RCU.  O outro ramo assume que a page cache
+          # nao e truncada em contexto de interrupcao.
+          ! grep -q '^CONFIG_TINY_RCU=y' "$F" || { echo 'FATAL: CONFIG_TINY_RCU=y habilitada'; exit 1; }
+          grep -q '^CONFIG_PREEMPT_RCU=y' "$F"
+          echo 'G2.5c: CONFIG_TINY_RCU desligado, a equivalencia de page_ref vale.'
+
       - name: Compilar Kernel (Image, dtbs, dtbo.img)
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |

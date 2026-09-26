@@ -14,9 +14,10 @@ KERNEL_DIR="$(cd "$KERNEL_DIR" && pwd)"
 FL="$KERNEL_DIR/mm/filemap.c"
 PM="$KERNEL_DIR/include/linux/pagemap.h"
 PR="$KERNEL_DIR/include/linux/page_ref.h"
+MMH="$KERNEL_DIR/include/linux/mm.h"
 MC="$KERNEL_DIR/mm/memcontrol.c"
 
-for f in "$FL" "$PM" "$PR" "$MC"; do
+for f in "$FL" "$PM" "$PR" "$MC" "$MMH"; do
     [ -f "$f" ] || { echo "FATAL: $f ausente" >&2; exit 1; }
 done
 
@@ -111,15 +112,26 @@ ok "find_lock_entry segue intacto" \
    "find_lock_entry mudou de assinatura"
 
 # --- a semantica da referencia e a mesma ---------------------------
+# Sem CONFIG_TINY_RCU, folio_try_get_rcu() reduz a page_ref_add_unless() com
+# nr = 1, e page_cache_get_speculative() reduz a get_page_unless_zero(), que
+# e a mesma coisa.  Conferir os dois corpos e mais forte do que ler o .config
+# e funciona antes de o .config existir.  A checagem de que TINY_RCU esta
+# desligado vive num step do CI que roda depois da geracao do .config.
 ok "folio_try_get_rcu usa a mesma primitiva do E404" \
    "grep -q 'return folio_ref_try_add_rcu(folio, 1);' \"\$PR\"" \
    "folio_try_get_rcu mudou"
 ok "a primitiva sem TINY_RCU e um add-if-not-zero" \
    "grep -q 'if (unlikely(!folio_ref_add_unless(folio, count, 0)))' \"\$PR\"" \
    "o caminho sem TINY_RCU mudou"
-ok "o build nao usa TINY_RCU" \
-   "! grep -q 'CONFIG_TINY_RCU=y' \"\$KERNEL_DIR/include/generated/autoconf.h\"" \
-   "a semantica de page_cache_get_speculative() muda com TINY_RCU"
+ok "as duas primitivas convergem no mesmo helper" \
+   "grep -q 'return page_ref_add_unless(&folio->page, nr, u);' \"\$PR\"" \
+   "folio_ref_add_unless nao delega para o helper de page"
+ok "get_page_unless_zero usa esse mesmo helper" \
+   "grep -q 'return page_ref_add_unless(page, 1, 0);' \"\$MMH\"" \
+   "o lado de page nao usa o mesmo helper"
+ok "a diferenca de TINY_RCU continua declarada" \
+   "grep -q '#ifdef CONFIG_TINY_RCU' \"\$PR\"" \
+   "o ramo de TINY_RCU desapareceu"
 
 # --- invariantes dos estagios anteriores -----------------------------
 ok "filemap_alloc_folio do G2.5a segue inteiro" \
