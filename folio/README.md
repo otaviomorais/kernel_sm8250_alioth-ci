@@ -90,6 +90,21 @@ deixou o `page_folio()` de fora porque o caller ja tem o folio na mao. A
 invariante que importa continua verificada a parte: nenhum caller passa
 `struct page *`.
 
+### O workflow está no teto de inputs do GitHub
+
+`workflow_dispatch` aceita no máximo 25 inputs. Com os 18 booleanos de folio mais
+os 8 de MGLRU, KSU/SUSFS, DroidSpaces e `force_build`, o workflow chegou a 26 e
+o dispatch passou a responder `HTTP 422`. O input `custom_boot_url` foi removido
+para voltar a 25; o `boot.img` base passa a vir sempre do Alioth AOSP, e o outro
+workflow do repositório, `build-kernel.yml`, ainda tem o input.
+
+Isso significa que **o próximo estágio de folio não cabe** sem antes consolidar.
+A consolidação natural é trocar os 18 booleanos por um único input de escolha
+`folio_stage`, com valores `off`, `g1`, `g2`, `g22` … `g25f`: os estágios são
+cumulativos, então "até o estágio N" é a única escolha que significa alguma coisa,
+e 17 booleanos estão expressing a mesma coisa 17 vezes. Fica registrado aqui
+para o próximo não bater no mesmo muro.
+
 ### Como isso e testado
 
 Rodar os oito `verify-*.sh` na arvore acumulada, e nao so o do estagio novo,

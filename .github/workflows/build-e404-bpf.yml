@@ -143,11 +143,6 @@ on:
           - memcg-full-mq
           - memcg-full-binfmt
           - memcg-full-net
-      custom_boot_url:
-        description: 'URL direta opcional de um boot.img base da sua ROM para injetar'
-        required: false
-        type: string
-        default: ''
 
 permissions:
   contents: write
@@ -1162,8 +1157,6 @@ jobs:
 
       - name: Preparar magiskboot e Gerar boot.img
         if: steps.check_upstream.outputs.should_build == 'true'
-        env:
-          CUSTOM_BOOT_URL: ${{ inputs.custom_boot_url }}
         run: |
           set -e
           mkdir -p boot_pack
@@ -1173,15 +1166,15 @@ jobs:
           unzip -p magisk.apk lib/x86_64/libmagiskboot.so > magiskboot
           chmod +x magiskboot
 
-          if [ -n "$CUSTOM_BOOT_URL" ]; then
-            echo "Baixando boot.img customizado da URL fornecida."
-            curl -fsSL -o base_boot.img -- "$CUSTOM_BOOT_URL"
-          else
-            echo "Baixando boot.img base do Alioth AOSP..."
-            curl -fsSL -o boot.zip https://raw.githubusercontent.com/sakana164/Build-Kernel-Action/main/boot.zip
-            unzip -q boot.zip
-            mv boot.img base_boot.img
-          fi
+          # O input custom_boot_url foi removido: com os 18 booleanos de folio o
+          # workflow_dispatch passou de 25 inputs, que e o limite do GitHub.  Para
+          # usar um boot.img base da sua ROM, troque a URL de uma linha abaixo
+          # por um push, ou sobrescreva o base_boot.img neste step.  O outro
+          # workflow do repositorio, build-kernel.yml, ainda tem o input.
+          echo "Baixando boot.img base do Alioth AOSP..."
+          curl -fsSL -o boot.zip https://raw.githubusercontent.com/sakana164/Build-Kernel-Action/main/boot.zip
+          unzip -q boot.zip
+          mv boot.img base_boot.img
 
           echo "Descompactando boot.img base..."
           ./magiskboot unpack base_boot.img
