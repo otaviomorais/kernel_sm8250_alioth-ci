@@ -48,6 +48,74 @@ O workflow aplica G1, G2.1 e G2.2a somente quando `enable_folios_g22=true`;
 `enable_folios_g2=true` valida apenas G1+G2.1 e `enable_folios_g1=true`
 valida apenas G1.
 
+## G2.5d
+
+`e404-folio-g2.5d.patch` aplica, sobre o G2.5c, o patch upstream 88/90
+(`mm/filemap: Add filemap_get_folio`).
+
+`pagecache_get_page()` vira `__filemap_get_folio()` e ganha um inline novo,
+`filemap_get_folio()`, por cima. Em `mm/swap.c`, `folio_mark_accessed()` passa a
+ser a implementação e `mark_page_accessed()` vira o wrapper.
+
+### `pagecache_get_page` continua sendo função real
+
+Esta é a divergência que mais merece atenção. O upstream transforma
+`pagecache_get_page()` em `static inline` dentro de `mm/folio-compat.c`, arquivo
+que esta árvore não tem. Aqui ele vira um `static inline` em `pagemap.h`, o
+símbolo sai do `.ko` e a promessa de ABI do vendor quebra.
+
+`pagecache_get_page` está em `android/abi_gki_aarch64_qcom`, a lista de 2502
+símbolos que o build GKI do Qualcomm promete manter. Por isso a função continua
+em `mm/filemap.c` como função real, com o seu `EXPORT_SYMBOL`. É a razão de o
+wrapper ser de três linhas em vez dos oito do upstream: sem `FGP_HEAD` não há
+para que lado cair, então a head page é sempre a resposta certa.
+
+O `verify-g25d.sh` checa isso de duas formas. A checagem direta do
+`EXPORT_SYMBOL` roda sempre; a checagem contra a lista de ABI é pulada quando o
+arquivo não está na árvore — a árvore de trabalho local tem só
+`fs/include/kernel/mm` — e roda de verdade no CI, onde a árvore é completa. O
+workflow ainda tem um passo separado que falha se a lista estiver ausente, para
+que o pulo local nunca vire um pulo silencioso no CI.
+
+O arquivo de ABI é um ini: `[abi_symbol_list]` no topo e dois espaços de
+indentação em cada símbolo. A busca usa `^[[:space:]]*pagecache_get_page[[:space:]]*$`
+e não `^pagecache_get_page$`, que não casaria com nada.
+
+### O `pagecache_get_page` do E404 era mais simples que o do 5.16
+
+Quatro partes do patch upstream não têm o que converter aqui, e reproduzi-las
+seria importar de 5.16 algo que não tem contraparte:
+
+- **`FGP_HEAD` e o `find_subpage()` que vinha junto.** O xarray do E404 só guarda
+  head pages, então a entrada de `@index` sempre começa em `@index`. Não existe
+  flag `FGP_HEAD`, e não existe `find_lock_head()` para remover.
+- **`thp_contains()`** na checagem de truncamento do `FGP_LOCK`. A invariante do
+  E404 era `page->index == offset`, que vira `folio->index == index` e é
+  verificada com `VM_BUG_ON_FOLIO()`.
+- **O ramo `FGP_WRITE`/`page_is_idle()`.** A função do E404 não tem esse ramo;
+  o bit idle é limpo por `folio_mark_accessed()`.
+- **`FGP_ENTRY`.** Não existe no E404, e a função sempre converte entrada de
+  shadow ou swap em `NULL`. Isso é preservado.
+
+### `folio_mark_accessed` fica com o corpo do E404
+
+O `mark_page_accessed()` do E404 e o `folio_mark_accessed()` do 5.16 diferem em
+dois pontos: o E404 não retorna cedo em página unevictable, e o 5.16 sim; o E404
+limpa o bit idle no fim, e o 5.16 não. Trocar qualquer um dos dois mudaria
+comportamento, e não só o tipo, então o corpo do E404 foi mantido.
+
+O que de fato sai é o `compound_head()` do começo: um folio já é a head, que é
+justamente o ponto da conversão. O resto do corpo — o ramo do MGLRU com
+`page_inc_refs()`, a ativação pelo pagevec, `workingset_activation()` e a limpeza
+de idle — está intacto.
+
+### `find_get_entry` continua de pé
+
+O 88/90 converte apenas `pagecache_get_page()`. `find_lock_entry()` e
+`mm/memcontrol.c` ainda chamam `find_get_entry()`, então o wrapper do G2.5c não
+pode sair aqui. No upstream ele só é removido depois que esses dois são
+convertidos, num patch posterior.
+
 ## G2.5c
 
 `e404-folio-g2.5c.patch` aplica, sobre o G2.5b, o patch upstream 87/90

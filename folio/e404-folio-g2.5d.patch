@@ -1,0 +1,353 @@
+From: Codex folio backport <codex@local>
+Subject: [PATCH] E404 folio G2.5d: Add filemap_get_folio() (upstream 88/90)
+
+pagecache_get_page() becomes __filemap_get_folio(), and filemap_get_folio()
+is a new inline on top of it.  folio_mark_accessed() is added alongside
+mark_page_accessed(), which becomes its wrapper.
+
+E404's pagecache_get_page() was simpler than 5.16's, so several upstream
+hunks have nothing to convert here:
+
+  - %FGP_HEAD and the find_subpage() call that went with it.  The E404
+    xarray holds only head pages, so the entry for @index always starts at
+    @index.  There is no FGP_HEAD flag and no find_lock_head() to remove.
+  - thp_contains() in the FGP_LOCK truncation check.  The E404 invariant
+    was page->index == offset, which becomes folio->index == index.
+  - The FGP_WRITE/page_is_idle() branch.  E404's function has no such
+    branch; the idle flag is cleared by folio_mark_accessed() instead.
+  - FGP_ENTRY.  E404 has no such flag, and its function always turns a
+    shadow or swap entry into %NULL, which is kept.
+
+Divergences from upstream, all deliberate:
+
+  - pagecache_get_page() stays a real function in mm/filemap.c rather than
+    a static inline, and keeps its EXPORT_SYMBOL.  It is listed in
+    android/abi_gki_aarch64_qcom, so the vendor GKI ABI promises the symbol:
+    it has to keep existing and keep being exported.  Upstream moves it to
+    mm/folio-compat.c, which this tree does not have, and that is where the
+    difference would otherwise come from.
+
+  - The wrapper does not consult FGP_HEAD and does not fall back to
+    folio_file_page().  Neither exists in this tree, so the head page is
+    always the right answer, and the function is three lines instead of the
+    eight upstream needs.
+
+  - folio_mark_accessed() keeps E404's body rather than upstream's.  E404
+    does not early-return on an unevictable folio and does clear the idle
+    flag at the end; upstream's 5.16 body differs on both points, and
+    changing either would change behaviour rather than just the type.  The
+    compound_head() call is what actually goes away: a folio already is the
+    head.
+
+  - mapping_cap_account_dirty() is kept, not mapping_can_writeback().
+
+The G2.5c find_get_entry() wrapper stays: this patch converts
+pagecache_get_page() only, and find_lock_entry() plus mm/memcontrol.c still
+call it.  Upstream drops it in a later patch once those are converted.
+
+diff --git a/include/linux/pagemap.h b/include/linux/pagemap.h
+index 89aafaa..3ac02b1 100644
+--- a/include/linux/pagemap.h
++++ b/include/linux/pagemap.h
+@@ -314,9 +314,27 @@ pgoff_t page_cache_prev_miss(struct address_space *mapping,
+ #define FGP_NOWAIT		0x00000020
+ #define FGP_FOR_MMAP		0x00000040
+ 
++struct folio *__filemap_get_folio(struct address_space *mapping, pgoff_t index,
++		int fgp_flags, gfp_t gfp);
+ struct page *pagecache_get_page(struct address_space *mapping, pgoff_t offset,
+ 		int fgp_flags, gfp_t cache_gfp_mask);
+ 
++/**
++ * filemap_get_folio - Find and get a folio.
++ * @mapping: The address_space to search.
++ * @index: The page index.
++ *
++ * Looks up the page cache entry at @mapping & @index.  If a folio is
++ * present, it is returned with an increased refcount.
++ *
++ * Otherwise, %NULL is returned.
++ */
++static inline struct folio *filemap_get_folio(struct address_space *mapping,
++					pgoff_t index)
++{
++	return __filemap_get_folio(mapping, index, 0, 0);
++}
++
+ /**
+  * find_get_page - find and get a page reference
+  * @mapping: the address_space to search
+diff --git a/include/linux/swap.h b/include/linux/swap.h
+index 570aa0d..61c3224 100644
+--- a/include/linux/swap.h
++++ b/include/linux/swap.h
+@@ -346,6 +346,7 @@ extern unsigned long nr_free_pagecache_pages(void);
+ 
+ /* linux/mm/swap.c */
+ extern void folio_add_lru(struct folio *folio);
++extern void folio_mark_accessed(struct folio *folio);
+ extern void lru_cache_add(struct page *);
+ extern void lru_cache_add_anon(struct page *page);
+ extern void lru_cache_add_file(struct page *page);
+diff --git a/mm/filemap.c b/mm/filemap.c
+index 64259a1..414896f 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -1948,105 +1948,142 @@ repeat:
+ EXPORT_SYMBOL(find_lock_entry);
+ 
+ /**
+- * pagecache_get_page - find and get a page reference
+- * @mapping: the address_space to search
+- * @offset: the page index
+- * @fgp_flags: PCG flags
+- * @gfp_mask: gfp mask to use for the page cache data page allocation
+- *
+- * Looks up the page cache slot at @mapping & @offset.
+- *
+- * PCG flags modify how the page is returned.
+- *
+- * @fgp_flags can be:
++ * __filemap_get_folio - Find and get a reference to a folio.
++ * @mapping: The address_space to search.
++ * @index: The page index.
++ * @fgp_flags: %FGP flags modify how the folio is returned.
++ * @gfp: Memory allocation flags to use if %FGP_CREAT is specified.
++ *
++ * Looks up the page cache entry at @mapping & @index.
++ *
++ * @fgp_flags can be zero or more of these flags:
++ *
++ * * %FGP_ACCESSED - The folio will be marked accessed.
++ * * %FGP_LOCK - The folio is returned locked.
++ * * %FGP_CREAT - If no page is present then a new folio is allocated using
++ *   @gfp and added to the page cache and the VM's LRU list.
++ *   The folio is returned locked and with an increased refcount.
++ * * %FGP_FOR_MMAP - The caller wants to do its own locking dance if the
++ *   page is already in cache.  If the page was allocated, unlock it before
++ *   returning so the caller can do the same dance.
++ * * %FGP_WRITE - The page will be written
++ * * %FGP_NOFS - __GFP_FS will get cleared in gfp mask
++ * * %FGP_NOWAIT - Don't get blocked by page lock
++ *
++ * If %FGP_LOCK or %FGP_CREAT are specified then the function may sleep even
++ * if the %GFP flags specified for %FGP_CREAT are atomic.
+  *
+- * - FGP_ACCESSED: the page will be marked accessed
+- * - FGP_LOCK: Page is return locked
+- * - FGP_CREAT: If page is not present then a new page is allocated using
+- *   @gfp_mask and added to the page cache and the VM's LRU
+- *   list. The page is returned locked and with an increased
+- *   refcount.
+- * - FGP_FOR_MMAP: Similar to FGP_CREAT, only we want to allow the caller to do
+- *   its own locking dance if the page is already in cache, or unlock the page
+- *   before returning if we had to add the page to pagecache.
++ * If there is a page cache page, it is returned with an increased refcount.
+  *
+- * If FGP_LOCK or FGP_CREAT are specified then the function may sleep even
+- * if the GFP flags specified for FGP_CREAT are atomic.
++ * Return: The found folio or %NULL otherwise.
+  *
+- * If there is a page cache page, it is returned with an increased refcount.
++ * Upstream patch 88/90.  E404's version of this function was simpler than
++ * 5.16's and the parts that only exist for multi-page xarray entries are not
++ * reproduced here:
+  *
+- * Return: the found page or %NULL otherwise.
++ *   - %FGP_HEAD and the find_subpage() call that went with it.  E404's xarray
++ *     holds only head pages, so the entry for @index always starts at @index.
++ *     There is no FGP_HEAD flag and no find_lock_head() to remove either.
++ *   - thp_contains() in the FGP_LOCK truncation check.  The E404 invariant
++ *     was page->index == offset, which becomes folio->index == index below.
++ *   - The FGP_WRITE/page_is_idle() branch.  E404's function has no such
++ *     branch; the idle flag is cleared by folio_mark_accessed() instead.
++ *   - FGP_ENTRY.  E404 has no such flag and always turns a shadow or swap
++ *     entry into %NULL, which is kept below.
+  */
+-struct page *pagecache_get_page(struct address_space *mapping, pgoff_t offset,
+-	int fgp_flags, gfp_t gfp_mask)
++struct folio *__filemap_get_folio(struct address_space *mapping, pgoff_t index,
++		int fgp_flags, gfp_t gfp)
+ {
+-	struct page *page;
++	struct folio *folio;
+ 
+ repeat:
+-	page = find_get_entry(mapping, offset);
+-	if (xa_is_value(page))
+-		page = NULL;
+-	if (!page)
++	folio = mapping_get_entry(mapping, index);
++	if (xa_is_value(folio))
++		folio = NULL;
++	if (!folio)
+ 		goto no_page;
+ 
+ 	if (fgp_flags & FGP_LOCK) {
+ 		if (fgp_flags & FGP_NOWAIT) {
+-			if (!trylock_page(page)) {
+-				put_page(page);
++			if (!folio_trylock(folio)) {
++				folio_put(folio);
+ 				return NULL;
+ 			}
+ 		} else {
+-			lock_page(page);
++			folio_lock(folio);
+ 		}
+ 
+ 		/* Has the page been truncated? */
+-		if (unlikely(page->mapping != mapping)) {
+-			unlock_page(page);
+-			put_page(page);
++		if (unlikely(folio->mapping != mapping)) {
++			folio_unlock(folio);
++			folio_put(folio);
+ 			goto repeat;
+ 		}
+-		VM_BUG_ON_PAGE(page->index != offset, page);
++		VM_BUG_ON_FOLIO(folio->index != index, folio);
+ 	}
+ 
+-	if (page && (fgp_flags & FGP_ACCESSED))
+-		mark_page_accessed(page);
++	if (folio && (fgp_flags & FGP_ACCESSED))
++		folio_mark_accessed(folio);
+ 
+ no_page:
+-	if (!page && (fgp_flags & FGP_CREAT)) {
++	if (!folio && (fgp_flags & FGP_CREAT)) {
+ 		int err;
+ 		if ((fgp_flags & FGP_WRITE) && mapping_cap_account_dirty(mapping))
+-			gfp_mask |= __GFP_WRITE;
++			gfp |= __GFP_WRITE;
+ 		if (fgp_flags & FGP_NOFS)
+-			gfp_mask &= ~__GFP_FS;
++			gfp &= ~__GFP_FS;
+ 
+-		page = __page_cache_alloc(gfp_mask);
+-		if (!page)
++		folio = filemap_alloc_folio(gfp, 0);
++		if (!folio)
+ 			return NULL;
+ 
+ 		if (WARN_ON_ONCE(!(fgp_flags & (FGP_LOCK | FGP_FOR_MMAP))))
+ 			fgp_flags |= FGP_LOCK;
+ 
+-		/* Init accessed so avoid atomic mark_page_accessed later */
++		/* Init accessed so avoid atomic folio_mark_accessed later */
+ 		if (fgp_flags & FGP_ACCESSED)
+-			__SetPageReferenced(page);
++			__folio_set_referenced(folio);
+ 
+-		err = add_to_page_cache_lru(page, mapping, offset, gfp_mask);
++		err = filemap_add_folio(mapping, folio, index, gfp);
+ 		if (unlikely(err)) {
+-			put_page(page);
+-			page = NULL;
++			folio_put(folio);
++			folio = NULL;
+ 			if (err == -EEXIST)
+ 				goto repeat;
+ 		}
+ 
+ 		/*
+-		 * add_to_page_cache_lru locks the page, and for mmap we expect
++		 * filemap_add_folio locks the page, and for mmap we expect
+ 		 * an unlocked page.
+ 		 */
+-		if (page && (fgp_flags & FGP_FOR_MMAP))
+-			unlock_page(page);
++		if (folio && (fgp_flags & FGP_FOR_MMAP))
++			folio_unlock(folio);
+ 	}
+ 
+-	return page;
++	return folio;
++}
++EXPORT_SYMBOL(__filemap_get_folio);
++
++/*
++ * pagecache_get_page - Find and get a reference to a page.
++ *
++ * This is the compatibility wrapper upstream puts in mm/folio-compat.c, which
++ * this tree does not have.  It stays a real function, not a static inline,
++ * because pagecache_get_page is listed in android/abi_gki_aarch64_qcom: the
++ * vendor GKI ABI promises the symbol, so it has to keep existing and keep
++ * being exported.
++ *
++ * Upstream's wrapper consults FGP_HEAD and falls back to folio_file_page().
++ * E404 has neither the flag nor the multi-page xarray entries those handle,
++ * so the head page is always the right answer here.
++ */
++struct page *pagecache_get_page(struct address_space *mapping, pgoff_t offset,
++		int fgp_flags, gfp_t cache_gfp_mask)
++{
++	struct folio *folio = __filemap_get_folio(mapping, offset, fgp_flags,
++						 cache_gfp_mask);
++
++	return folio ? &folio->page : NULL;
+ }
+ EXPORT_SYMBOL(pagecache_get_page);
+ 
+diff --git a/mm/swap.c b/mm/swap.c
+index 9835c0f..8c6ee6b 100644
+--- a/mm/swap.c
++++ b/mm/swap.c
+@@ -422,18 +422,25 @@ static void page_inc_refs(struct page *page)
+ #endif /* CONFIG_LRU_GEN */
+ 
+ /*
+- * Mark a page as having seen activity.
++ * folio_mark_accessed - Mark a folio as having seen activity.
+  *
+  * inactive,unreferenced	->	inactive,referenced
+  * inactive,referenced		->	active,unreferenced
+  * active,unreferenced		->	active,referenced
+  *
+- * When a newly allocated page is not yet visible, so safe for non-atomic ops,
+- * __SetPageReferenced(page) may be substituted for mark_page_accessed(page).
++ * When a newly allocated folio is not yet visible, so safe for non-atomic
++ * ops, __folio_set_referenced() may be substituted for this.
++ *
++ * Upstream patch 88/90 introduces this.  The body is E404's
++ * mark_page_accessed() with the compound_head() call dropped: a folio already
++ * is the head, which is the whole point of the conversion.  Note that E404
++ * does not early-return on an unevictable folio and does clear the idle flag
++ * at the end; both stay, because changing either would change behaviour rather
++ * than just the type.
+  */
+-void mark_page_accessed(struct page *page)
++void folio_mark_accessed(struct folio *folio)
+ {
+-	page = compound_head(page);
++	struct page *page = &folio->page;
+ 
+ 	if (lru_gen_enabled()) {
+ 		page_inc_refs(page);
+@@ -444,7 +451,7 @@ void mark_page_accessed(struct page *page)
+ 			PageReferenced(page)) {
+ 
+ 		/*
+-		 * If the page is on the LRU, queue it for activation via
++		 * If the folio is on the LRU, queue it for activation via
+ 		 * activate_page_pvecs. Otherwise, assume the page is on a
+ 		 * pagevec, mark it active and it'll be moved to the active
+ 		 * LRU on the next drain.
+@@ -462,6 +469,16 @@ void mark_page_accessed(struct page *page)
+ 	if (page_is_idle(page))
+ 		clear_page_idle(page);
+ }
++EXPORT_SYMBOL(folio_mark_accessed);
++
++/*
++ * Compatibility wrapper for callers that were not converted to folios
++ * (upstream puts this in mm/folio-compat.c, which this tree does not have).
++ */
++void mark_page_accessed(struct page *page)
++{
++	folio_mark_accessed(page_folio(page));
++}
+ EXPORT_SYMBOL(mark_page_accessed);
+ 
+ static void __lru_cache_add(struct page *page)
