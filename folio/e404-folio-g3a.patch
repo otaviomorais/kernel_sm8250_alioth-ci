@@ -1,0 +1,83 @@
+From: Codex folio backport <codex@local>
+Subject: [PATCH] E404 folio G3a: folio_pfn() e wb_stat_mod() (upstream 51/90 e 63/90)
+
+Primeira camada do G3.  Sao dois patches triviais, escolhidos primeiro de
+proposito: eles tocam include/linux/backing-dev.h, que estava entre os arquivos
+que faltavam na arvore de trabalho local, entao o build do CI aqui prova que a
+base reconstruida esta no lugar certo antes que o resto do G3, que e bem maior,
+seja escrito em cima dela.
+
+51/90, folio_pfn():
+
+  O corpo e o do upstream sem mudanca.  A ancora de insercao e o #endif que
+  fecha o bloco de SECTIONS depois de page_to_section(), e nao a linha de
+  contexto que o upstream usa, porque o E404 nao tem is_pinnable_page() -- a
+  funcao que o patch do upstream usa como linha seguinte.  page_to_pfn() ja e
+  visivel em include/linux/mm.h nesse ponto: o macro page_to_virt da linha 93 o
+  usa.
+
+63/90, __add_wb_stat() vira wb_stat_mod():
+
+  Renomeacao pura.  No E404 __add_wb_stat tem 3 ocorrencias, todas dentro do
+  proprio include/linux/backing-dev.h, entao nao ha caller nenhum fora a
+  renomear e o patch nao tem nada a adaptar alem do nome.
+
+Este e o patch que o mTHP vai precisar: sem page cache capaz de guardar folio
+multi-page, khugepaged nao tem o que colapsar, e sem a geometria de folio nao ha
+como saber quantas paginas um folio cobre.
+
+diff --git a/include/linux/backing-dev.h b/include/linux/backing-dev.h
+index 249f630..c88af86 100644
+--- a/include/linux/backing-dev.h
++++ b/include/linux/backing-dev.h
+@@ -64,7 +64,7 @@ static inline bool bdi_has_dirty_io(struct backing_dev_info *bdi)
+ 	return atomic_long_read(&bdi->tot_write_bandwidth);
+ }
+ 
+-static inline void __add_wb_stat(struct bdi_writeback *wb,
++static inline void wb_stat_mod(struct bdi_writeback *wb,
+ 				 enum wb_stat_item item, s64 amount)
+ {
+ 	percpu_counter_add_batch(&wb->stat[item], amount, WB_STAT_BATCH);
+@@ -72,12 +72,12 @@ static inline void __add_wb_stat(struct bdi_writeback *wb,
+ 
+ static inline void inc_wb_stat(struct bdi_writeback *wb, enum wb_stat_item item)
+ {
+-	__add_wb_stat(wb, item, 1);
++	wb_stat_mod(wb, item, 1);
+ }
+ 
+ static inline void dec_wb_stat(struct bdi_writeback *wb, enum wb_stat_item item)
+ {
+-	__add_wb_stat(wb, item, -1);
++	wb_stat_mod(wb, item, -1);
+ }
+ 
+ static inline s64 wb_stat(struct bdi_writeback *wb, enum wb_stat_item item)
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 49002f9..9ca3556 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -1322,6 +1322,22 @@ static inline unsigned long page_to_section(const struct page *page)
+ }
+ #endif
+ 
++/**
++ * folio_pfn - Return the Page Frame Number of a folio.
++ * @folio: The folio.
++ *
++ * A folio may contain multiple pages.  The pages have consecutive
++ * Page Frame Numbers.
++ *
++ * Return: The Page Frame Number of the first page in the folio.
++ *
++ * Upstream patch 51/90.  O corpo e o do upstream sem mudanca.
++ */
++static inline unsigned long folio_pfn(struct folio *folio)
++{
++	return page_to_pfn(&folio->page);
++}
++
+ static inline void set_page_zone(struct page *page, enum zone_type zone)
+ {
+ 	page->flags &= ~(ZONES_MASK << ZONES_PGSHIFT);
