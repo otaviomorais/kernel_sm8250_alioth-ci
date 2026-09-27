@@ -75,9 +75,11 @@ echo "  ok   __folio_cancel_dirty exportado"
 grep -q 'EXPORT_SYMBOL(__cancel_dirty_page);' "$KDIR/mm/page-writeback.c"
 echo "  ok   __cancel_dirty_page exportado"
 
-# 4. Redirty helpers
 grep -q 'void folio_account_redirty(struct folio \*folio);' "$KDIR/include/linux/writeback.h"
 echo "  ok   folio_account_redirty declarado em writeback.h"
+
+grep -q 'void account_page_redirty(struct page \*page);' "$KDIR/include/linux/writeback.h"
+echo "  ok   account_page_redirty declarado em writeback.h"
 
 grep -q 'bool folio_redirty_for_writepage(struct writeback_control \*wbc, struct folio \*folio);' "$KDIR/include/linux/writeback.h"
 echo "  ok   folio_redirty_for_writepage declarado em writeback.h"

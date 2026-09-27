@@ -199,17 +199,13 @@ diff --git a/include/linux/writeback.h b/include/linux/writeback.h
 index 9239819e5..d2d1023d3 100644
 --- a/include/linux/writeback.h
 +++ b/include/linux/writeback.h
-@@ -367,7 +367,14 @@ void writeback_set_ratelimit(void);
+@@ -367,7 +367,11 @@ void writeback_set_ratelimit(void);
  void tag_pages_for_writeback(struct address_space *mapping,
  			     pgoff_t start, pgoff_t end);
  
--void account_page_redirty(struct page *page);
 +bool filemap_dirty_folio(struct address_space *mapping, struct folio *folio);
 +void folio_account_redirty(struct folio *folio);
-+static inline void account_page_redirty(struct page *page)
-+{
-+	folio_account_redirty(page_folio(page));
-+}
+ void account_page_redirty(struct page *page);
 +bool folio_redirty_for_writepage(struct writeback_control *wbc, struct folio *folio);
 +int redirty_page_for_writepage(struct writeback_control *wbc, struct page *page);
  
