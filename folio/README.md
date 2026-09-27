@@ -6,7 +6,7 @@ somente a serie upstream Linux `folio-5.16` (merge
 
 ## Estado de validacao
 
-Os builds sao cumulativos: o release do G2.5f contem G1 ate G2.5f. Entao um
+Os builds sao cumulativos: o release do G3c contem G1 ate G3c. Entao um
 unico boot bem-sucedido do build mais novo valida a cadeia inteira, nao so o
 ultimo patch.
 
@@ -26,9 +26,9 @@ ultimo patch.
 | G2.5d | `folio-g25d` | aparelho (via G2.5f) |
 | G2.5e | `folio-g25e` | aparelho (via G2.5f) |
 | G2.5f | `folio-g25f` | aparelho |
-| G3a | `folio-g3a` | CI/unitario |
-| G3b | `folio-g3b` | CI/unitario |
-| G3c | `folio-g3c` | CI/unitario |
+| G3a | `folio-g3a` | aparelho (via G3c) |
+| G3b | `folio-g3b` | aparelho (via G3c) |
+| G3c | `folio-g3c` | aparelho |
 
 O que um boot prova e o que nao prova: o boot cobre o caminho de alocacao, page
 cache e LRU, porque o sistema inteiro depende deles para subir. Ele **nao** cobre
