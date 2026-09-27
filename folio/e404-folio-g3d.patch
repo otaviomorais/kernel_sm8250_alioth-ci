@@ -1,0 +1,175 @@
+From: Codex folio backport <codex@local>
+Subject: [PATCH] E404 folio G3d: eviccao, adicao no LRU, pgoff e estimated sharers (upstream 30/90, 36/90, 81/90 e 82/90)
+
+Quinta camada do G3: eviccao de memoria, ciclo de insercao no LRU por folio, offset e estimativa de compartilhamentos.
+
+81/90, folio_evictable():
+  Implementa folio_evictable(struct folio *folio) em mm/vmscan.c.
+  Declara folio_evictable() em include/linux/swap.h e preserva page_evictable()
+  como wrapper inline transparente delegando a folio_evictable(page_folio(page)).
+
+82/90, __folio_lru_add_fn():
+  Implementa __folio_lru_add_fn(struct folio *folio, struct lruvec *lruvec) em mm/swap.c,
+  usando folio_test_clear_unevictable(), folio_set_lru(), folio_evictable(),
+  folio_lru_list() e folio_clear/set_active/unevictable().
+  __pagevec_lru_add_fn() torna-se wrapper delegando a __folio_lru_add_fn().
+
+30/90, folio_pgoff():
+  Adiciona static inline pgoff_t folio_pgoff(struct folio *folio) em include/linux/pagemap.h.
+  Trata hugetlb com hugetlb_basepage_index(&folio->page) e paginas normais com folio->index.
+
+36/90, folio_estimated_sharers():
+  Adiciona static inline int folio_estimated_sharers(struct folio *folio) em include/linux/mm.h,
+  retornando page_mapcount(&folio->page).
+
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index c33852b90..8ee9c8579 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -740,6 +740,11 @@ static inline int page_mapcount(struct page *page)
+ 	return atomic_read(&page->_mapcount) + 1;
+ }
+ 
++static inline int folio_estimated_sharers(struct folio *folio)
++{
++	return page_mapcount(&folio->page);
++}
++
+ #ifdef CONFIG_TRANSPARENT_HUGEPAGE
+ int total_mapcount(struct page *page);
+ int page_trans_huge_mapcount(struct page *page, int *total_mapcount);
+diff --git a/include/linux/pagemap.h b/include/linux/pagemap.h
+index 04c2e6d6a..35c3c3830 100644
+--- a/include/linux/pagemap.h
++++ b/include/linux/pagemap.h
+@@ -513,6 +513,13 @@ static inline pgoff_t page_to_index(struct page *page)
+ 
+ extern pgoff_t hugetlb_basepage_index(struct page *page);
+ 
++static inline pgoff_t folio_pgoff(struct folio *folio)
++{
++	if (unlikely(folio_test_hugetlb(folio)))
++		return hugetlb_basepage_index(&folio->page);
++	return folio->index;
++}
++
+ /*
+  * Get the offset in PAGE_SIZE (even for hugetlb pages).
+  * (TODO: hugetlb pages should have ->index in PAGE_SIZE)
+diff --git a/include/linux/swap.h b/include/linux/swap.h
+index ac37bec08..7ad4a2f86 100644
+--- a/include/linux/swap.h
++++ b/include/linux/swap.h
+@@ -397,7 +397,11 @@ extern int sysctl_min_slab_ratio;
+ #define node_reclaim_mode 0
+ #endif
+ 
+-extern int page_evictable(struct page *page);
++bool folio_evictable(struct folio *folio);
++static inline bool page_evictable(struct page *page)
++{
++	return folio_evictable(page_folio(page));
++}
+ extern void check_move_unevictable_pages(struct page **, int nr_pages);
+ 
+ extern int kswapd_run(int nid);
+diff --git a/mm/swap.c b/mm/swap.c
+index 41b7f274e..79809425f 100644
+--- a/mm/swap.c
++++ b/mm/swap.c
+@@ -1034,15 +1034,14 @@ void lru_add_page_tail(struct page *page, struct page *page_tail,
+ }
+ #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
+ 
+-static void __pagevec_lru_add_fn(struct page *page, struct lruvec *lruvec,
+-				 void *arg)
++static void __folio_lru_add_fn(struct folio *folio, struct lruvec *lruvec)
+ {
+ 	enum lru_list lru;
+-	int was_unevictable = TestClearPageUnevictable(page);
++	int was_unevictable = folio_test_clear_unevictable(folio);
+ 
+-	VM_BUG_ON_PAGE(PageLRU(page), page);
++	VM_BUG_ON_FOLIO(folio_test_lru(folio), folio);
+ 
+-	SetPageLRU(page);
++	folio_set_lru(folio);
+ 	/*
+ 	 * Page becomes evictable in two ways:
+ 	 * 1) Within LRU lock [munlock_vma_pages() and __munlock_pagevec()].
+@@ -1071,22 +1070,28 @@ static void __pagevec_lru_add_fn(struct page *page, struct lruvec *lruvec,
+ 	 */
+ 	smp_mb();
+ 
+-	if (page_evictable(page)) {
+-		lru = page_lru(page);
+-		update_page_reclaim_stat(lruvec, page_is_file_cache(page),
+-					 PageActive(page));
++	if (folio_evictable(folio)) {
++		lru = folio_lru_list(folio);
++		update_page_reclaim_stat(lruvec, folio_is_file_lru(folio),
++					 folio_test_active(folio));
+ 		if (was_unevictable)
+ 			count_vm_event(UNEVICTABLE_PGRESCUED);
+ 	} else {
+ 		lru = LRU_UNEVICTABLE;
+-		ClearPageActive(page);
+-		SetPageUnevictable(page);
++		folio_clear_active(folio);
++		folio_set_unevictable(folio);
+ 		if (!was_unevictable)
+ 			count_vm_event(UNEVICTABLE_PGCULLED);
+ 	}
+ 
+-	add_page_to_lru_list(page, lruvec, lru);
+-	trace_mm_lru_insertion(page, lru);
++	add_page_to_lru_list(&folio->page, lruvec, lru);
++	trace_mm_lru_insertion(&folio->page, lru);
++}
++
++static void __pagevec_lru_add_fn(struct page *page, struct lruvec *lruvec,
++				 void *arg)
++{
++	__folio_lru_add_fn(page_folio(page), lruvec);
+ }
+ 
+ /*
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 9a2a7f609..805798566 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -7101,24 +7101,25 @@ int node_reclaim(struct pglist_data *pgdat, gfp_t gfp_mask, unsigned int order)
+ #endif
+ 
+ /*
+- * page_evictable - test whether a page is evictable
+- * @page: the page to test
++ * folio_evictable - test whether a folio is evictable
++ * @folio: the folio to test
+  *
+- * Test whether page is evictable--i.e., should be placed on active/inactive
++ * Test whether folio is evictable--i.e., should be placed on active/inactive
+  * lists vs unevictable list.
+  *
+- * Reasons page might not be evictable:
+- * (1) page's mapping marked unevictable
+- * (2) page is part of an mlocked VMA
++ * Reasons folio might not be evictable:
++ * (1) folio's mapping marked unevictable
++ * (2) folio is part of an mlocked VMA
+  *
+  */
+-int page_evictable(struct page *page)
++bool folio_evictable(struct folio *folio)
+ {
+-	int ret;
++	bool ret;
+ 
+ 	/* Prevent address_space of inode and swap cache from being freed */
+ 	rcu_read_lock();
+-	ret = !mapping_unevictable(page_mapping(page)) && !PageMlocked(page);
++	ret = !mapping_unevictable(folio_mapping(folio)) &&
++			!folio_test_mlocked(folio);
+ 	rcu_read_unlock();
+ 	return ret;
+ }

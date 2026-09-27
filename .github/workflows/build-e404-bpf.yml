@@ -66,6 +66,7 @@ on:
           - g3a
           - g3b
           - g3c
+          - g3d
       droidspaces_profile:
         description: 'Perfil DroidSpaces (full recomendado; minimal; perfis cumulativos históricos)'
         required: true
@@ -429,6 +430,14 @@ jobs:
           echo "Aplicando o G3c de folios (patches 32/90, 33/90, 56/90 e 57/90)..."
           bash folio/apply-g3c.sh kernel
           echo "FOLIO_SUFFIX=-folio-g3c" >> "$GITHUB_ENV"
+
+      - name: Integrar folio G3d (eviccao, adicao no LRU, pgoff e estimated sharers, opt-in)
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b","g25a","g25b","g25c","g25d","g25e","g25f","g3a","g3b","g3c","g3d"]'), github.event.inputs.folio_stage))
+        run: |
+          set -euo pipefail
+          echo "Aplicando o G3d de folios (patches 30/90, 36/90, 81/90 e 82/90)..."
+          bash folio/apply-g3d.sh kernel
+          echo "FOLIO_SUFFIX=-folio-g3d" >> "$GITHUB_ENV"
 
       - name: Checkout KernelSU-Next legacy (UAPI 2)
         if: steps.check_upstream.outputs.should_build == 'true' && (github.event.inputs.enable_ksu != 'false') && (inputs.ksu_stack == 'legacy-susfs2-experimental')
@@ -1116,6 +1125,20 @@ jobs:
           done
           echo 'Folio G3c validado; folio_mapped(), folio_nid(), folio_test_young/idle e folio_activate(), e os 12 verifies passam.'
 
+      - name: Validar folio G3d no kernel
+        if: steps.check_upstream.outputs.should_build == 'true' && (contains(fromJSON('["g1","g2","g22","g22b","g23a","g23b","g23c","g23d","g23e","g23f","g24a","g24b","g25a","g25b","g25c","g25d","g25e","g25f","g3a","g3b","g3c","g3d"]'), github.event.inputs.folio_stage))
+        run: |
+          set -euo pipefail
+          bash folio/verify-g3d.sh kernel
+
+          test -z "$(find kernel -type f -name '*.rej' -print -quit)"
+          test ! -e kernel/mm/folio-compat.c
+          for v in g23f g24a g24b g25a g25b g25c g25d g25e g25f g3a g3b g3c; do
+            echo "Rodando folio/verify-$v.sh na arvore acumulada..."
+            bash "folio/verify-$v.sh" kernel
+          done
+          echo 'Folio G3d validado; folio_evictable(), __folio_lru_add_fn(), folio_pgoff() e folio_estimated_sharers(), e os 13 verifies passam.'
+
       - name: Compilar Kernel (Image, dtbs, dtbo.img)
         if: steps.check_upstream.outputs.should_build == 'true'
         run: |
@@ -1263,7 +1286,9 @@ jobs:
           else
             MGLRU_STATUS="Desativado (baseline preservado)"
           fi
-          if [ "$FOLIO_SUFFIX" = "-folio-g3c" ]; then
+          if [ "$FOLIO_SUFFIX" = "-folio-g3d" ]; then
+            FOLIO_STATUS="G3d ativado (patches 30/90, 36/90, 81/90 e 82/90: folio_evictable() e __folio_lru_add_fn() no LRU, folio_pgoff() e folio_estimated_sharers(); wrappers transparentes page_evictable() e __pagevec_lru_add_fn() preservados)"
+          elif [ "$FOLIO_SUFFIX" = "-folio-g3c" ]; then
             FOLIO_STATUS="G3c ativado (patches 32/90, 33/90, 56/90 e 57/90: folio_mapped(), folio_nid(), folio_test_young/idle e folio_activate() por folio com wrappers transparentes para page; preservados rmap_walk_control e contadores do E404)"
           elif [ "$FOLIO_SUFFIX" = "-folio-g3b" ]; then
             FOLIO_STATUS="G3b ativado (patches 52/90, 53/90 e 59/90: folio_raw_mapping() e flush_dcache_folio() novas, folio_mkclean() por folio com page_mkclean() como wrapper; formas do E404 preservadas, rmap_walk_control e nao rmap_walk_walk)"
