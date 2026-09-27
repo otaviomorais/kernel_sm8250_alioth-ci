@@ -82,6 +82,9 @@ echo "  ok   folio_account_redirty declarado em writeback.h"
 grep -q 'bool folio_redirty_for_writepage(struct writeback_control \*wbc, struct folio \*folio);' "$KDIR/include/linux/writeback.h"
 echo "  ok   folio_redirty_for_writepage declarado em writeback.h"
 
+grep -q 'int redirty_page_for_writepage(struct writeback_control \*wbc, struct page \*page);' "$KDIR/include/linux/writeback.h"
+echo "  ok   redirty_page_for_writepage int compativel com mm.h"
+
 grep -q 'EXPORT_SYMBOL(folio_account_redirty);' "$KDIR/mm/page-writeback.c"
 echo "  ok   folio_account_redirty exportado"
 

@@ -211,7 +211,7 @@ index 9239819e5..d2d1023d3 100644
 +	folio_account_redirty(page_folio(page));
 +}
 +bool folio_redirty_for_writepage(struct writeback_control *wbc, struct folio *folio);
-+bool redirty_page_for_writepage(struct writeback_control *wbc, struct page *page);
++int redirty_page_for_writepage(struct writeback_control *wbc, struct page *page);
  
  void sb_mark_inode_writeback(struct inode *inode);
  void sb_clear_inode_writeback(struct inode *inode);
