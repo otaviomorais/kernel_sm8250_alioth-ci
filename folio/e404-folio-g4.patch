@@ -196,7 +196,7 @@ index 35c3c3830..05b029ce6 100644
 +
  #endif /* _LINUX_PAGEMAP_H */
 diff --git a/include/linux/writeback.h b/include/linux/writeback.h
-index 9239819e5..d2d1023d3 100644
+index 9239819e5..19d854974 100644
 --- a/include/linux/writeback.h
 +++ b/include/linux/writeback.h
 @@ -367,7 +367,11 @@ void writeback_set_ratelimit(void);
@@ -243,10 +243,10 @@ index c0544e8d9..050ad2254 100644
   *                    Migration functions
   ***********************************************************/
 diff --git a/mm/page-writeback.c b/mm/page-writeback.c
-index f7a53935b..28613ca9a 100644
+index f7a53935b..410ef5c63 100644
 --- a/mm/page-writeback.c
 +++ b/mm/page-writeback.c
-@@ -2446,129 +2446,148 @@ int __set_page_dirty_no_writeback(struct page *page)
+@@ -2446,28 +2446,35 @@ int __set_page_dirty_no_writeback(struct page *page)
   *
   * NOTE: This relies on being atomic wrt interrupts.
   */
@@ -292,11 +292,11 @@ index f7a53935b..28613ca9a 100644
 +}
  EXPORT_SYMBOL(account_page_dirtied);
  
--/*
-- * Helper function for deaccounting dirty page without writeback.
-- *
-- * Caller must hold lock_page_memcg().
-- */
+ /*
+@@ -2475,58 +2482,65 @@ EXPORT_SYMBOL(account_page_dirtied);
+  *
+  * Caller must hold lock_page_memcg().
+  */
 -void account_page_cleaned(struct page *page, struct address_space *mapping,
 +void folio_account_cleaned(struct folio *folio, struct address_space *mapping,
  			  struct bdi_writeback *wb)
@@ -373,13 +373,6 @@ index f7a53935b..28613ca9a 100644
 -			__mark_inode_dirty(mapping->host, I_DIRTY_PAGES);
 -		}
 -		return 1;
-+void __set_page_dirty(struct page *page, struct address_space *mapping,
-+		      int warn)
-+{
-+	__folio_mark_dirty(page_folio(page), mapping, warn);
-+}
-+EXPORT_SYMBOL(__set_page_dirty);
-+
 +bool filemap_dirty_folio(struct address_space *mapping, struct folio *folio)
 +{
 +	folio_memcg_lock(folio);
@@ -407,13 +400,10 @@ index f7a53935b..28613ca9a 100644
  }
  EXPORT_SYMBOL(__set_page_dirty_nobuffers);
  
--/*
-- * Call this whenever redirtying a page, to de-account the dirty counters
-- * (NR_DIRTIED, WB_DIRTIED, tsk->nr_dirtied), so that they match the written
-- * counters (NR_WRITTEN, WB_WRITTEN) in long term. The mismatches will lead to
-- * systematic errors in balanced_dirty_ratelimit and the dirty pages position
-- * control.
-- */
+@@ -2537,22 +2551,29 @@ EXPORT_SYMBOL(__set_page_dirty_nobuffers);
+  * systematic errors in balanced_dirty_ratelimit and the dirty pages position
+  * control.
+  */
 -void account_page_redirty(struct page *page)
 +void folio_account_redirty(struct folio *folio)
  {
@@ -444,11 +434,11 @@ index f7a53935b..28613ca9a 100644
 +}
  EXPORT_SYMBOL(account_page_redirty);
  
--/*
-- * When a writepage implementation decides that it doesn't want to write this
-- * page for some reason, it should redirty the locked page via
-- * redirty_page_for_writepage() and it should then unlock the page and return 0
-- */
+ /*
+@@ -2560,15 +2581,23 @@ EXPORT_SYMBOL(account_page_redirty);
+  * page for some reason, it should redirty the locked page via
+  * redirty_page_for_writepage() and it should then unlock the page and return 0
+  */
 -int redirty_page_for_writepage(struct writeback_control *wbc, struct page *page)
 +bool folio_redirty_for_writepage(struct writeback_control *wbc,
 +		struct folio *folio)
@@ -474,7 +464,7 @@ index f7a53935b..28613ca9a 100644
  EXPORT_SYMBOL(redirty_page_for_writepage);
  
  /*
-@@ -2582,36 +2601,31 @@ EXPORT_SYMBOL(redirty_page_for_writepage);
+@@ -2582,11 +2611,10 @@ EXPORT_SYMBOL(redirty_page_for_writepage);
   * If the mapping doesn't provide a set_page_dirty a_op, then
   * just fall through and assume that it wants buffer_heads.
   */
@@ -487,16 +477,11 @@ index f7a53935b..28613ca9a 100644
 -	page = compound_head(page);
  	if (likely(mapping)) {
  		int (*spd)(struct page *) = mapping->a_ops->set_page_dirty;
--		/*
--		 * readahead/lru_deactivate_page could remain
--		 * PG_readahead/PG_reclaim due to race with end_page_writeback
--		 * About readahead, if the page is written, the flags would be
--		 * reset. So no problem.
--		 * About lru_deactivate_page, if the page is redirty, the flag
--		 * will be reset. So no problem. but if the page is used by readahead
--		 * it will confuse readahead and make it restart the size rampup
--		 * process. But it's a trivial problem.
--		 */
+ 		/*
+@@ -2599,19 +2627,25 @@ int set_page_dirty(struct page *page)
+ 		 * it will confuse readahead and make it restart the size rampup
+ 		 * process. But it's a trivial problem.
+ 		 */
 -		if (PageReclaim(page))
 -			ClearPageReclaim(page);
 +		if (folio_test_reclaim(folio))
@@ -526,7 +511,7 @@ index f7a53935b..28613ca9a 100644
  }
  EXPORT_SYMBOL(set_page_dirty);
  
-@@ -2649,27 +2663,33 @@ EXPORT_SYMBOL(set_page_dirty_lock);
+@@ -2649,27 +2683,33 @@ EXPORT_SYMBOL(set_page_dirty_lock);
   * page without actually doing it through the VM. Can you say "ext3 is
   * horribly ugly"? Thought you could.
   */
@@ -567,7 +552,7 @@ index f7a53935b..28613ca9a 100644
  EXPORT_SYMBOL(__cancel_dirty_page);
  
  /*
-@@ -2842,21 +2862,22 @@ bool __folio_end_writeback(struct folio *folio)
+@@ -2842,21 +2882,22 @@ bool __folio_end_writeback(struct folio *folio)
  	return ret;
  }
  
@@ -596,7 +581,7 @@ index f7a53935b..28613ca9a 100644
  		if (!ret) {
  			bool on_wblist;
  
-@@ -2865,31 +2886,42 @@ int __test_set_page_writeback(struct page *page, bool keep_write)
+@@ -2865,31 +2906,42 @@ int __test_set_page_writeback(struct page *page, bool keep_write)
  
  			xas_set_mark(&xas, PAGECACHE_TAG_WRITEBACK);
  			if (bdi_cap_account_writeback(bdi))

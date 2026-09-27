@@ -59,6 +59,9 @@ echo "  ok   filemap_dirty_folio exportado"
 grep -q 'EXPORT_SYMBOL(__set_page_dirty_nobuffers);' "$KDIR/mm/page-writeback.c"
 echo "  ok   __set_page_dirty_nobuffers exportado"
 
+! grep -q 'EXPORT_SYMBOL(__set_page_dirty);' "$KDIR/mm/page-writeback.c"
+echo "  ok   __set_page_dirty nao e exportado em mm/page-writeback.c (evita duplicata com fs/buffer.c)"
+
 # 3. Cleaned e Cancel dirty
 grep -q 'void folio_account_cleaned(struct folio \*folio, struct address_space \*mapping,' "$KDIR/include/linux/mm.h"
 echo "  ok   folio_account_cleaned declarado em mm.h"
