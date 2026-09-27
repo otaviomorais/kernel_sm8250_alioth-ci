@@ -26,6 +26,9 @@ ultimo patch.
 | G2.5d | `folio-g25d` | aparelho (via G2.5f) |
 | G2.5e | `folio-g25e` | aparelho (via G2.5f) |
 | G2.5f | `folio-g25f` | aparelho |
+| G3a | `folio-g3a` | CI/unitario |
+| G3b | `folio-g3b` | CI/unitario |
+| G3c | `folio-g3c` | CI/unitario |
 
 O que um boot prova e o que nao prova: o boot cobre o caminho de alocacao, page
 cache e LRU, porque o sistema inteiro depende deles para subir. Ele **nao** cobre
@@ -75,8 +78,8 @@ seguintes.
 ### Como escolher o estágio no CI
 
 O workflow tem um único input de folio, `folio_stage`, com os valores `off`,
-`g1`, `g2`, `g22` … `g25f`. Cada valor é cumulativo: `folio_stage: g25f` aplica
-G1 até G2.5f, e `folio_stage: g22` aplica G1, G2.1 e G2.2a. O padrão é `off`,
+`g1`, `g2`, `g22` … `g3c`. Cada valor é cumulativo: `folio_stage: g3c` aplica
+G1 até G3c, e `folio_stage: g22` aplica G1, G2.1 e G2.2a. O padrão é `off`,
 então um build sem escolher nada não integra folios.
 
 Isso substitui os 18 booleanos `enable_folios_*` que existiam antes. Ver a
@@ -892,3 +895,31 @@ O workflow aplica G1 -> G2.1 -> G2.2a -> G2.2b quando
 
 A base exata do patch e o commit E404
 `ca410e68b6aa31efca73bbec288ef1ed671701f6`.
+
+## G3a
+
+`e404-folio-g3a.patch` adiciona a primeira camada do G3 (upstream 51/90 e 63/90):
+- `folio_pfn(folio)`: retorna `page_to_pfn(&folio->page)` em `include/linux/mm.h`;
+- `wb_stat_mod(wb, item, amount)`: renomeia `__add_wb_stat()` em `include/linux/backing-dev.h`
+  para convergir com a assinatura do upstream 5.16 sem alterar o comportamento.
+
+## G3b
+
+`e404-folio-g3b.patch` adiciona a geometria e `folio_mkclean()` (upstream 52/90, 53/90 e 59/90):
+- `folio_raw_mapping()`: inline em `mm/util.c` mascarando flags de mapping;
+- `flush_dcache_folio()`: no-op em `include/asm-generic/cacheflush.h` (arm64 coerente por hardware);
+- `folio_mkclean()`: extraído em `mm/rmap.c` preservando `struct rmap_walk_control` do E404;
+- `page_mkclean()`: mantido como wrapper inline transparente em `include/linux/rmap.h`.
+
+## G3c
+
+`e404-folio-g3c.patch` adiciona mapeamento, nó, idle tracking e ciclo de vida do LRU (upstream 32/90, 33/90, 56/90 e 57/90):
+- `folio_mapcount_ptr()`: adicionado em `include/linux/mm_types.h` acessando `compound_mapcount`;
+- `folio_mapped()`: implementado em `mm/util.c`, exportado e com declaração em `include/linux/mm.h`;
+- `page_mapped()`: convertido em wrapper delegando a `folio_mapped(page_folio(page))`, exportado;
+- `folio_nid()`: `static inline` em `include/linux/mm.h` delegando a `page_to_nid(&folio->page)`;
+- `folio_young` e `folio_idle`: helpers em `include/linux/page_idle.h` com wrappers transparentes
+  para `page_*` sob `CONFIG_IDLE_PAGE_TRACKING` do 4.19;
+- `folio_activate()` e `__folio_activate()`: implementados em `mm/swap.c` para SMP e !SMP,
+  preservando pagevecs e tracepoint `mm_lru_activate`; `activate_page()` como wrapper exportado.
+
