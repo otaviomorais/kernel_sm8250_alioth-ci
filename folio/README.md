@@ -30,6 +30,7 @@ ultimo patch.
 | G3b | `folio-g3b` | aparelho (via G3c) |
 | G3c | `folio-g3c` | aparelho |
 | G3d | `folio-g3d` | CI/unitario |
+| G4 | `folio-g4` | CI/unitario |
 
 O que um boot prova e o que nao prova: o boot cobre o caminho de alocacao, page
 cache e LRU, porque o sistema inteiro depende deles para subir. Ele **nao** cobre
@@ -79,8 +80,8 @@ seguintes.
 ### Como escolher o estágio no CI
 
 O workflow tem um único input de folio, `folio_stage`, com os valores `off`,
-`g1`, `g2`, `g22` … `g3d`. Cada valor é cumulativo: `folio_stage: g3d` aplica
-G1 até G3d, e `folio_stage: g22` aplica G1, G2.1 e G2.2a. O padrão é `off`,
+`g1`, `g2`, `g22` … `g4`. Cada valor é cumulativo: `folio_stage: g4` aplica
+G1 até G4, e `folio_stage: g22` aplica G1, G2.1 e G2.2a. O padrão é `off`,
 então um build sem escolher nada não integra folios.
 
 Isso substitui os 18 booleanos `enable_folios_*` que existiam antes. Ver a
@@ -936,4 +937,22 @@ A base exata do patch e o commit E404
 - `folio_pgoff()`: `static inline` em `include/linux/pagemap.h` retornando `folio->page.index`;
 - `folio_estimated_sharers()`: `static inline` em `include/linux/mm.h` retornando
   `compound_mapcount(&folio->page)`.
+
+## G4 (Final)
+
+`e404-folio-g4.patch` conclui 100% dos patches aplicáveis da série upstream `folio-5.16` no kernel 4.19.404R:
+- **Dirtying e Page Writeback (`mm/page-writeback.c` e `include/linux/writeback.h`)**:
+  - `folio_account_dirtied()`, `folio_account_cleaned()`, `__folio_mark_dirty()`;
+  - `filemap_dirty_folio()`, `folio_account_redirty()`, `folio_redirty_for_writepage()`;
+  - `folio_mark_dirty()`, `__folio_cancel_dirty()`, `__folio_start_writeback()`;
+  - Wrappers retrocompatíveis `account_page_redirty()`, `redirty_page_for_writepage()`, `set_page_writeback()`, `test_set_page_writeback()` e `cancel_dirty_page()`.
+- **Truncate e Blocos em Pagemap (`include/linux/pagemap.h`)**:
+  - `folio_mkwrite_check_truncate()`, com wrapper `page_mkwrite_check_truncate()`;
+  - `i_blocks_per_folio()`, com wrapper `i_blocks_per_page()`.
+- **Memcg e LRUvec (`include/linux/memcontrol.h`)**:
+  - `folio_memcg()` e `folio_lruvec()` implementados para `CONFIG_MEMCG` e `!CONFIG_MEMCG`, adaptados para as estruturas do E404 4.19 (`pgdat->lru_lock`).
+- **Migração de Memória (`mm/migrate.c` e `include/linux/migrate.h`)**:
+  - `folio_migrate_mapping()`, `folio_migrate_flags()`, `folio_migrate_copy()` implementadas e exportadas com `EXPORT_SYMBOL`;
+  - Wrappers `migrate_page_move_mapping()`, `migrate_page_states()`, `migrate_page_copy()` mantidos intactos e delegando diretamente às rotinas de folio.
+
 

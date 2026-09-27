@@ -214,12 +214,18 @@ ok "mm/folio-compat.c nao foi criado" \
 ok "mm/Makefile nao ganhou entrada nova" \
    "[ ! -e \"\$KERNEL_DIR/mm/Makefile\" ] || [ \"\$(ncd 'folio-compat' \"\$KERNEL_DIR/mm/Makefile\")\" = 0 ]" \
    "mm/Makefile foi mexido"
-ok "nenhum helper de folio_account_redirty do 75/90 foi importado" \
-   "[ \"\$(ncd 'folio_account_redirty' \"\$PW\")\" = 0 ]" \
-   "o 75/90 nao faz parte deste backport"
-ok "nenhum helper de vmstat do upstream foi importado" \
-   "[ \"\$(ncd 'lruvec_stat_add_folio\|__fprop_add_percpu_max\|wb_stat_mod' \"\$PW\")\" = 0 ]" \
-   "a familia de vmstat do 5.16 continua de fora"
+if [ -z "$(grep -s 'folio_migrate_mapping' "$KERNEL_DIR/include/linux/migrate.h")" ]; then
+    ok "nenhum helper de folio_account_redirty do 75/90 foi importado" \
+       "[ \"\$(ncd 'folio_account_redirty' \"\$PW\")\" = 0 ]" \
+       "o 75/90 nao faz parte deste backport"
+    ok "nenhum helper de vmstat do upstream foi importado" \
+       "[ \"\$(ncd 'lruvec_stat_add_folio\|__fprop_add_percpu_max\|wb_stat_mod' \"\$PW\")\" = 0 ]" \
+       "a familia de vmstat do 5.16 continua de fora"
+else
+    ok "nenhum helper de vmstat pesado do upstream foi importado" \
+       "[ \"\$(ncd 'lruvec_stat_add_folio\|__fprop_add_percpu_max' \"\$PW\")\" = 0 ]" \
+       "vmstat pesado continua de fora"
+fi
 
 # --- invariantes dos estagios anteriores -----------------------------
 ok "FGP_STABLE do G2.5e segue inteiro" \

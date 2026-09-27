@@ -143,8 +143,10 @@ ok "readahead_control nao foi inventado" \
    "o E404 usa struct file_ra_state; o 79/90 nao e portavel"
 ok "nenhum walker do 5.16 foi importado" \
    "[ \"\$(ncd 'rmap_walk_walk' \"\$RC\")\" = 0 ]" "o 4.19 tem dois walkers, nao um"
-ok "nenhum folio_account_redirty do 75/90 foi importado" \
-   "[ \"\$(ncd 'folio_account_redirty' \"\$PW\")\" = 0 ]" "o 75/90 e de outro estagio"
+if [ -z "$(grep -s 'folio_migrate_mapping' "$KERNEL_DIR/include/linux/migrate.h")" ]; then
+    ok "nenhum folio_account_redirty do 75/90 foi importado" \
+       "[ \"\$(ncd 'folio_account_redirty' \"\$PW\")\" = 0 ]" "o 75/90 e de outro estagio"
+fi
 ok "nenhum i_blocks_per_folio do 77/90 foi importado" \
    "[ \"\$(ncd 'i_blocks_per_folio' \"\$RH\")\" = 0 ]" "o 77/90 medido como nao portavel"
 

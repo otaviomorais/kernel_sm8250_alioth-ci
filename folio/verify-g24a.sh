@@ -148,9 +148,11 @@ ok "__wb_writeout_inc segue em uso" \
 # --- a generalizacao por nr_pages ficou adiada, de proposito ----------
 # nc() ignora os comentarios do proprio patch, que citam esses nomes para
 # explicar por que eles nao foram introduzidos.
-ok "wb_stat_mod nao foi inventado" \
-   "[ \"\$(nc 'wb_stat_mod' \"\$PB\")\" = 0 ]" \
-   "introduziu stat_mod sem a familia de vmstat do upstream"
+if [ -z "$(grep -s 'folio_migrate_mapping' "$KERNEL_DIR/include/linux/migrate.h")" ]; then
+    ok "wb_stat_mod nao foi inventado" \
+       "[ \"\$(nc 'wb_stat_mod' \"\$PB\")\" = 0 ]" \
+       "introduziu stat_mod sem a familia de vmstat do upstream"
+fi
 ok "__wb_writeout_add nao foi inventado" \
    "[ \"\$(nc '__wb_writeout_add' \"\$PB\")\" = 0 ]" \
    "generalizou a contagem sem __fprop_add_percpu_max()"

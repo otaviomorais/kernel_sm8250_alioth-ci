@@ -1,0 +1,652 @@
+diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
+index 8950a2146..b6c133b50 100644
+--- a/include/linux/memcontrol.h
++++ b/include/linux/memcontrol.h
+@@ -582,6 +582,16 @@ static inline void folio_memcg_unlock(struct folio *folio)
+ 	unlock_page_memcg(&folio->page);
+ }
+ 
++static inline struct mem_cgroup *folio_memcg(struct folio *folio)
++{
++	return folio->page.mem_cgroup;
++}
++
++static inline struct lruvec *folio_lruvec(struct folio *folio, struct pglist_data *pgdat)
++{
++	return mem_cgroup_page_lruvec(&folio->page, pgdat);
++}
++
+ /* try to stablize page_memcg() for all the pages in a memcg */
+ static inline bool mem_cgroup_trylock_pages(struct mem_cgroup *memcg)
+ {
+@@ -1046,6 +1056,16 @@ static inline void folio_memcg_unlock(struct folio *folio)
+ {
+ }
+ 
++static inline struct mem_cgroup *folio_memcg(struct folio *folio)
++{
++	return NULL;
++}
++
++static inline struct lruvec *folio_lruvec(struct folio *folio, struct pglist_data *pgdat)
++{
++	return mem_cgroup_page_lruvec(&folio->page, pgdat);
++}
++
+ static inline bool mem_cgroup_trylock_pages(struct mem_cgroup *memcg)
+ {
+ 	/* to match page_memcg_rcu() */
+diff --git a/include/linux/migrate.h b/include/linux/migrate.h
+index f2b4abbca..3c69dc056 100644
+--- a/include/linux/migrate.h
++++ b/include/linux/migrate.h
+@@ -80,6 +80,10 @@ extern int migrate_page_move_mapping(struct address_space *mapping,
+ 		struct page *newpage, struct page *page,
+ 		struct buffer_head *head, enum migrate_mode mode,
+ 		int extra_count);
++int folio_migrate_mapping(struct address_space *mapping,
++		struct folio *newfolio, struct folio *folio, int extra_count);
++void folio_migrate_flags(struct folio *newfolio, struct folio *folio);
++void folio_migrate_copy(struct folio *newfolio, struct folio *folio);
+ #else
+ 
+ static inline void putback_movable_pages(struct list_head *l) {}
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 8ee9c8579..91e732edf 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -1746,6 +1746,7 @@ extern void do_invalidatepage(struct page *page, unsigned int offset,
+ 			      unsigned int length);
+ 
+ void __set_page_dirty(struct page *, struct address_space *, int warn);
++void __folio_mark_dirty(struct folio *folio, struct address_space *, int warn);
+ int __set_page_dirty_nobuffers(struct page *page);
+ int __set_page_dirty_no_writeback(struct page *page);
+ int redirty_page_for_writepage(struct writeback_control *wbc,
+@@ -1753,14 +1754,22 @@ int redirty_page_for_writepage(struct writeback_control *wbc,
+ void account_page_dirtied(struct page *page, struct address_space *mapping);
+ void account_page_cleaned(struct page *page, struct address_space *mapping,
+ 			  struct bdi_writeback *wb);
++void folio_account_cleaned(struct folio *folio, struct address_space *mapping,
++			  struct bdi_writeback *wb);
++bool folio_mark_dirty(struct folio *folio);
+ int set_page_dirty(struct page *page);
+ int set_page_dirty_lock(struct page *page);
+ void __cancel_dirty_page(struct page *page);
+-static inline void cancel_dirty_page(struct page *page)
++void __folio_cancel_dirty(struct folio *folio);
++static inline void folio_cancel_dirty(struct folio *folio)
+ {
+ 	/* Avoid atomic ops, locking, etc. when not actually needed. */
+-	if (PageDirty(page))
+-		__cancel_dirty_page(page);
++	if (folio_test_dirty(folio))
++		__folio_cancel_dirty(folio);
++}
++static inline void cancel_dirty_page(struct page *page)
++{
++	folio_cancel_dirty(page_folio(page));
+ }
+ int folio_clear_dirty_for_io(struct folio *folio);
+ int clear_page_dirty_for_io(struct page *page);
+diff --git a/include/linux/page-flags.h b/include/linux/page-flags.h
+index 154861e44..2bf8860d4 100644
+--- a/include/linux/page-flags.h
++++ b/include/linux/page-flags.h
+@@ -576,21 +576,23 @@ static __always_inline void SetPageUptodate(struct page *page)
+ 
+ CLEARPAGEFLAG(Uptodate, uptodate, PF_NO_TAIL)
+ 
++bool __folio_start_writeback(struct folio *folio, bool keep_write);
++bool set_page_writeback(struct page *page);
+ int __test_set_page_writeback(struct page *page, bool keep_write);
+ 
++#define folio_start_writeback(folio)			\
++	__folio_start_writeback(folio, false)
++#define folio_start_writeback_keepwrite(folio)	\
++	__folio_start_writeback(folio, true)
++
+ #define test_set_page_writeback(page)			\
+-	__test_set_page_writeback(page, false)
++	set_page_writeback(page)
+ #define test_set_page_writeback_keepwrite(page)	\
+-	__test_set_page_writeback(page, true)
+-
+-static inline void set_page_writeback(struct page *page)
+-{
+-	test_set_page_writeback(page);
+-}
++	folio_start_writeback_keepwrite(page_folio(page))
+ 
+ static inline void set_page_writeback_keepwrite(struct page *page)
+ {
+-	test_set_page_writeback_keepwrite(page);
++	folio_start_writeback_keepwrite(page_folio(page));
+ }
+ 
+ __PAGEFLAG(Head, head, PF_ANY) CLEARPAGEFLAG(Head, head, PF_ANY)
+diff --git a/include/linux/pagemap.h b/include/linux/pagemap.h
+index 35c3c3830..05b029ce6 100644
+--- a/include/linux/pagemap.h
++++ b/include/linux/pagemap.h
+@@ -938,4 +938,65 @@ static inline unsigned long dir_pages(struct inode *inode)
+ 			       PAGE_SHIFT;
+ }
+ 
++/**
++ * folio_mkwrite_check_truncate - check if folio was truncated
++ * @folio: the folio to check
++ * @inode: the inode to check the folio against
++ *
++ * Return: the number of bytes in the folio up to EOF,
++ * or -EFAULT if the folio was truncated.
++ */
++static inline ssize_t folio_mkwrite_check_truncate(struct folio *folio,
++					      struct inode *inode)
++{
++	loff_t size = i_size_read(inode);
++	pgoff_t index = size >> PAGE_SHIFT;
++	size_t offset = offset_in_page(size);
++
++	if (!folio->mapping)
++		return -EFAULT;
++
++	/* folio is wholly inside EOF */
++	if (folio_next_index(folio) - 1 < index)
++		return folio_size(folio);
++	/* folio is wholly past EOF */
++	if (folio->index > index || !offset)
++		return -EFAULT;
++	/* folio is partially inside EOF */
++	return offset;
++}
++
++/**
++ * page_mkwrite_check_truncate - check if page was truncated
++ * @page: the page to check
++ * @inode: the inode to check the page against
++ *
++ * Return: the number of bytes in the page up to EOF,
++ * or -EFAULT if the page was truncated.
++ */
++static inline int page_mkwrite_check_truncate(struct page *page,
++					      struct inode *inode)
++{
++	return folio_mkwrite_check_truncate(page_folio(page), inode);
++}
++
++/**
++ * i_blocks_per_folio - How many blocks fit in this folio.
++ * @inode: The inode which contains the blocks.
++ * @folio: The folio.
++ *
++ * Return: The number of filesystem blocks covered by this folio.
++ */
++static inline
++unsigned int i_blocks_per_folio(struct inode *inode, struct folio *folio)
++{
++	return folio_size(folio) >> inode->i_blkbits;
++}
++
++static inline
++unsigned int i_blocks_per_page(struct inode *inode, struct page *page)
++{
++	return i_blocks_per_folio(inode, page_folio(page));
++}
++
+ #endif /* _LINUX_PAGEMAP_H */
+diff --git a/include/linux/writeback.h b/include/linux/writeback.h
+index 9239819e5..d2d1023d3 100644
+--- a/include/linux/writeback.h
++++ b/include/linux/writeback.h
+@@ -367,7 +367,14 @@ void writeback_set_ratelimit(void);
+ void tag_pages_for_writeback(struct address_space *mapping,
+ 			     pgoff_t start, pgoff_t end);
+ 
+-void account_page_redirty(struct page *page);
++bool filemap_dirty_folio(struct address_space *mapping, struct folio *folio);
++void folio_account_redirty(struct folio *folio);
++static inline void account_page_redirty(struct page *page)
++{
++	folio_account_redirty(page_folio(page));
++}
++bool folio_redirty_for_writepage(struct writeback_control *wbc, struct folio *folio);
++bool redirty_page_for_writepage(struct writeback_control *wbc, struct page *page);
+ 
+ void sb_mark_inode_writeback(struct inode *inode);
+ void sb_clear_inode_writeback(struct inode *inode);
+diff --git a/mm/migrate.c b/mm/migrate.c
+index c0544e8d9..050ad2254 100644
+--- a/mm/migrate.c
++++ b/mm/migrate.c
+@@ -727,6 +727,26 @@ void migrate_page_copy(struct page *newpage, struct page *page)
+ }
+ EXPORT_SYMBOL(migrate_page_copy);
+ 
++int folio_migrate_mapping(struct address_space *mapping,
++		struct folio *newfolio, struct folio *folio, int extra_count)
++{
++	return migrate_page_move_mapping(mapping, &newfolio->page, &folio->page,
++					 NULL, MIGRATE_SYNC, extra_count);
++}
++EXPORT_SYMBOL(folio_migrate_mapping);
++
++void folio_migrate_flags(struct folio *newfolio, struct folio *folio)
++{
++	migrate_page_states(&newfolio->page, &folio->page);
++}
++EXPORT_SYMBOL(folio_migrate_flags);
++
++void folio_migrate_copy(struct folio *newfolio, struct folio *folio)
++{
++	migrate_page_copy(&newfolio->page, &folio->page);
++}
++EXPORT_SYMBOL(folio_migrate_copy);
++
+ /************************************************************
+  *                    Migration functions
+  ***********************************************************/
+diff --git a/mm/page-writeback.c b/mm/page-writeback.c
+index f7a53935b..28613ca9a 100644
+--- a/mm/page-writeback.c
++++ b/mm/page-writeback.c
+@@ -2446,129 +2446,148 @@ int __set_page_dirty_no_writeback(struct page *page)
+  *
+  * NOTE: This relies on being atomic wrt interrupts.
+  */
+-void account_page_dirtied(struct page *page, struct address_space *mapping)
++static void folio_account_dirtied(struct folio *folio,
++		struct address_space *mapping)
+ {
+ 	struct inode *inode = mapping->host;
+ 
+-	trace_writeback_dirty_page(page, mapping);
++	trace_writeback_dirty_page(&folio->page, mapping);
+ 
+ 	if (mapping_cap_account_dirty(mapping)) {
+ 		struct bdi_writeback *wb;
++		long nr = folio_nr_pages(folio);
+ 
+-		inode_attach_wb(inode, page);
++		inode_attach_wb(inode, &folio->page);
+ 		wb = inode_to_wb(inode);
+ 
+-		__inc_lruvec_page_state(page, NR_FILE_DIRTY);
+-		__inc_zone_page_state(page, NR_ZONE_WRITE_PENDING);
+-		__inc_node_page_state(page, NR_DIRTIED);
+-		inc_wb_stat(wb, WB_RECLAIMABLE);
+-		inc_wb_stat(wb, WB_DIRTIED);
+-		task_io_account_write(PAGE_SIZE);
+-		current->nr_dirtied++;
+-		this_cpu_inc(bdp_ratelimits);
++		__inc_lruvec_page_state(&folio->page, NR_FILE_DIRTY);
++		__inc_zone_page_state(&folio->page, NR_ZONE_WRITE_PENDING);
++		__inc_node_page_state(&folio->page, NR_DIRTIED);
++		wb_stat_mod(wb, WB_RECLAIMABLE, nr);
++		wb_stat_mod(wb, WB_DIRTIED, nr);
++		task_io_account_write(nr * PAGE_SIZE);
++		current->nr_dirtied += nr;
++		this_cpu_add(bdp_ratelimits, nr);
+ 	}
+ }
++
++void account_page_dirtied(struct page *page, struct address_space *mapping)
++{
++	folio_account_dirtied(page_folio(page), mapping);
++}
+ EXPORT_SYMBOL(account_page_dirtied);
+ 
+-/*
+- * Helper function for deaccounting dirty page without writeback.
+- *
+- * Caller must hold lock_page_memcg().
+- */
+-void account_page_cleaned(struct page *page, struct address_space *mapping,
++void folio_account_cleaned(struct folio *folio, struct address_space *mapping,
+ 			  struct bdi_writeback *wb)
+ {
+ 	if (mapping_cap_account_dirty(mapping)) {
+-		dec_lruvec_page_state(page, NR_FILE_DIRTY);
+-		dec_zone_page_state(page, NR_ZONE_WRITE_PENDING);
+-		dec_wb_stat(wb, WB_RECLAIMABLE);
+-		task_io_account_cancelled_write(PAGE_SIZE);
++		long nr = folio_nr_pages(folio);
++
++		dec_lruvec_page_state(&folio->page, NR_FILE_DIRTY);
++		dec_zone_page_state(&folio->page, NR_ZONE_WRITE_PENDING);
++		wb_stat_mod(wb, WB_RECLAIMABLE, -nr);
++		task_io_account_cancelled_write(nr * PAGE_SIZE);
+ 	}
+ }
++EXPORT_SYMBOL(folio_account_cleaned);
+ 
+-/*
+- * For address_spaces which do not use buffers.  Just tag the page as dirty in
+- * the xarray.
+- *
+- * This is also used when a single buffer is being dirtied: we want to set the
+- * page dirty in that case, but not all the buffers.  This is a "bottom-up"
+- * dirtying, whereas __set_page_dirty_buffers() is a "top-down" dirtying.
+- *
+- * The caller must ensure this doesn't race with truncation.  Most will simply
+- * hold the page lock, but e.g. zap_pte_range() calls with the page mapped and
+- * the pte lock held, which also locks out truncation.
+- */
+-int __set_page_dirty_nobuffers(struct page *page)
++void account_page_cleaned(struct page *page, struct address_space *mapping,
++			  struct bdi_writeback *wb)
+ {
+-	lock_page_memcg(page);
+-	if (!TestSetPageDirty(page)) {
+-		struct address_space *mapping = page_mapping(page);
+-		unsigned long flags;
++	folio_account_cleaned(page_folio(page), mapping, wb);
++}
++EXPORT_SYMBOL(account_page_cleaned);
+ 
+-		if (!mapping) {
+-			unlock_page_memcg(page);
+-			return 1;
+-		}
++void __folio_mark_dirty(struct folio *folio, struct address_space *mapping,
++			int warn)
++{
++	unsigned long flags;
+ 
+-		xa_lock_irqsave(&mapping->i_pages, flags);
+-		BUG_ON(page_mapping(page) != mapping);
+-		WARN_ON_ONCE(!PagePrivate(page) && !PageUptodate(page));
+-		account_page_dirtied(page, mapping);
+-		__xa_set_mark(&mapping->i_pages, page_index(page),
+-				   PAGECACHE_TAG_DIRTY);
+-		xa_unlock_irqrestore(&mapping->i_pages, flags);
+-		unlock_page_memcg(page);
++	xa_lock_irqsave(&mapping->i_pages, flags);
++	if (folio->mapping) {	/* Race with truncate? */
++		WARN_ON_ONCE(warn && !folio_test_uptodate(folio));
++		folio_account_dirtied(folio, mapping);
++		__xa_set_mark(&mapping->i_pages, folio_index(folio),
++				PAGECACHE_TAG_DIRTY);
++	}
++	xa_unlock_irqrestore(&mapping->i_pages, flags);
++}
++EXPORT_SYMBOL(__folio_mark_dirty);
+ 
+-		if (mapping->host) {
+-			/* !PageAnon && !swapper_space */
+-			__mark_inode_dirty(mapping->host, I_DIRTY_PAGES);
+-		}
+-		return 1;
++void __set_page_dirty(struct page *page, struct address_space *mapping,
++		      int warn)
++{
++	__folio_mark_dirty(page_folio(page), mapping, warn);
++}
++EXPORT_SYMBOL(__set_page_dirty);
++
++bool filemap_dirty_folio(struct address_space *mapping, struct folio *folio)
++{
++	folio_memcg_lock(folio);
++	if (folio_test_set_dirty(folio)) {
++		folio_memcg_unlock(folio);
++		return false;
+ 	}
+-	unlock_page_memcg(page);
+-	return 0;
++
++	__folio_mark_dirty(folio, mapping, !folio_has_private(folio));
++	folio_memcg_unlock(folio);
++
++	if (mapping->host) {
++		/* !PageAnon && !swapper_space */
++		__mark_inode_dirty(mapping->host, I_DIRTY_PAGES);
++	}
++	return true;
++}
++EXPORT_SYMBOL(filemap_dirty_folio);
++
++int __set_page_dirty_nobuffers(struct page *page)
++{
++	return filemap_dirty_folio(page_mapping(page), page_folio(page));
+ }
+ EXPORT_SYMBOL(__set_page_dirty_nobuffers);
+ 
+-/*
+- * Call this whenever redirtying a page, to de-account the dirty counters
+- * (NR_DIRTIED, WB_DIRTIED, tsk->nr_dirtied), so that they match the written
+- * counters (NR_WRITTEN, WB_WRITTEN) in long term. The mismatches will lead to
+- * systematic errors in balanced_dirty_ratelimit and the dirty pages position
+- * control.
+- */
+-void account_page_redirty(struct page *page)
++void folio_account_redirty(struct folio *folio)
+ {
+-	struct address_space *mapping = page->mapping;
++	struct address_space *mapping = folio->mapping;
+ 
+ 	if (mapping && mapping_cap_account_dirty(mapping)) {
+ 		struct inode *inode = mapping->host;
+ 		struct bdi_writeback *wb;
+ 		struct wb_lock_cookie cookie = {};
++		long nr = folio_nr_pages(folio);
+ 
+ 		wb = unlocked_inode_to_wb_begin(inode, &cookie);
+-		current->nr_dirtied--;
+-		dec_node_page_state(page, NR_DIRTIED);
+-		dec_wb_stat(wb, WB_DIRTIED);
++		current->nr_dirtied -= nr;
++		dec_node_page_state(&folio->page, NR_DIRTIED);
++		wb_stat_mod(wb, WB_DIRTIED, -nr);
+ 		unlocked_inode_to_wb_end(inode, &cookie);
+ 	}
+ }
++EXPORT_SYMBOL(folio_account_redirty);
++
++void account_page_redirty(struct page *page)
++{
++	folio_account_redirty(page_folio(page));
++}
+ EXPORT_SYMBOL(account_page_redirty);
+ 
+-/*
+- * When a writepage implementation decides that it doesn't want to write this
+- * page for some reason, it should redirty the locked page via
+- * redirty_page_for_writepage() and it should then unlock the page and return 0
+- */
+-int redirty_page_for_writepage(struct writeback_control *wbc, struct page *page)
++bool folio_redirty_for_writepage(struct writeback_control *wbc,
++		struct folio *folio)
+ {
+-	int ret;
++	bool ret;
++	long nr = folio_nr_pages(folio);
+ 
+-	wbc->pages_skipped++;
+-	ret = __set_page_dirty_nobuffers(page);
+-	account_page_redirty(page);
++	wbc->pages_skipped += nr;
++	ret = filemap_dirty_folio(folio->mapping, folio);
++	folio_account_redirty(folio);
+ 	return ret;
+ }
++EXPORT_SYMBOL(folio_redirty_for_writepage);
++
++int redirty_page_for_writepage(struct writeback_control *wbc, struct page *page)
++{
++	return folio_redirty_for_writepage(wbc, page_folio(page));
++}
+ EXPORT_SYMBOL(redirty_page_for_writepage);
+ 
+ /*
+@@ -2582,36 +2601,31 @@ EXPORT_SYMBOL(redirty_page_for_writepage);
+  * If the mapping doesn't provide a set_page_dirty a_op, then
+  * just fall through and assume that it wants buffer_heads.
+  */
+-int set_page_dirty(struct page *page)
++bool folio_mark_dirty(struct folio *folio)
+ {
+-	struct address_space *mapping = page_mapping(page);
++	struct address_space *mapping = folio_mapping(folio);
+ 
+-	page = compound_head(page);
+ 	if (likely(mapping)) {
+ 		int (*spd)(struct page *) = mapping->a_ops->set_page_dirty;
+-		/*
+-		 * readahead/lru_deactivate_page could remain
+-		 * PG_readahead/PG_reclaim due to race with end_page_writeback
+-		 * About readahead, if the page is written, the flags would be
+-		 * reset. So no problem.
+-		 * About lru_deactivate_page, if the page is redirty, the flag
+-		 * will be reset. So no problem. but if the page is used by readahead
+-		 * it will confuse readahead and make it restart the size rampup
+-		 * process. But it's a trivial problem.
+-		 */
+-		if (PageReclaim(page))
+-			ClearPageReclaim(page);
++		if (folio_test_reclaim(folio))
++			folio_clear_reclaim(folio);
+ #ifdef CONFIG_BLOCK
+ 		if (!spd)
+ 			spd = __set_page_dirty_buffers;
+ #endif
+-		return (*spd)(page);
++		return (*spd)(&folio->page);
+ 	}
+-	if (!PageDirty(page)) {
+-		if (!TestSetPageDirty(page))
+-			return 1;
++	if (!folio_test_dirty(folio)) {
++		if (!folio_test_set_dirty(folio))
++			return true;
+ 	}
+-	return 0;
++	return false;
++}
++EXPORT_SYMBOL(folio_mark_dirty);
++
++int set_page_dirty(struct page *page)
++{
++	return folio_mark_dirty(page_folio(page));
+ }
+ EXPORT_SYMBOL(set_page_dirty);
+ 
+@@ -2649,27 +2663,33 @@ EXPORT_SYMBOL(set_page_dirty_lock);
+  * page without actually doing it through the VM. Can you say "ext3 is
+  * horribly ugly"? Thought you could.
+  */
+-void __cancel_dirty_page(struct page *page)
++void __folio_cancel_dirty(struct folio *folio)
+ {
+-	struct address_space *mapping = page_mapping(page);
++	struct address_space *mapping = folio_mapping(folio);
+ 
+ 	if (mapping_cap_account_dirty(mapping)) {
+ 		struct inode *inode = mapping->host;
+ 		struct bdi_writeback *wb;
+ 		struct wb_lock_cookie cookie = {};
+ 
+-		lock_page_memcg(page);
++		folio_memcg_lock(folio);
+ 		wb = unlocked_inode_to_wb_begin(inode, &cookie);
+ 
+-		if (TestClearPageDirty(page))
+-			account_page_cleaned(page, mapping, wb);
++		if (folio_test_clear_dirty(folio))
++			folio_account_cleaned(folio, mapping, wb);
+ 
+ 		unlocked_inode_to_wb_end(inode, &cookie);
+-		unlock_page_memcg(page);
++		folio_memcg_unlock(folio);
+ 	} else {
+-		ClearPageDirty(page);
++		folio_clear_dirty(folio);
+ 	}
+ }
++EXPORT_SYMBOL(__folio_cancel_dirty);
++
++void __cancel_dirty_page(struct page *page)
++{
++	__folio_cancel_dirty(page_folio(page));
++}
+ EXPORT_SYMBOL(__cancel_dirty_page);
+ 
+ /*
+@@ -2842,21 +2862,22 @@ bool __folio_end_writeback(struct folio *folio)
+ 	return ret;
+ }
+ 
+-int __test_set_page_writeback(struct page *page, bool keep_write)
++bool __folio_start_writeback(struct folio *folio, bool keep_write)
+ {
+-	struct address_space *mapping = page_mapping(page);
+-	int ret;
++	long nr = folio_nr_pages(folio);
++	struct address_space *mapping = folio_mapping(folio);
++	bool ret;
+ 
+-	lock_page_memcg(page);
++	folio_memcg_lock(folio);
+ 	if (mapping && mapping_use_writeback_tags(mapping)) {
+-		XA_STATE(xas, &mapping->i_pages, page_index(page));
++		XA_STATE(xas, &mapping->i_pages, folio_index(folio));
+ 		struct inode *inode = mapping->host;
+ 		struct backing_dev_info *bdi = inode_to_bdi(inode);
+ 		unsigned long flags;
+ 
+ 		xas_lock_irqsave(&xas, flags);
+ 		xas_load(&xas);
+-		ret = TestSetPageWriteback(page);
++		ret = folio_test_set_writeback(folio);
+ 		if (!ret) {
+ 			bool on_wblist;
+ 
+@@ -2865,31 +2886,42 @@ int __test_set_page_writeback(struct page *page, bool keep_write)
+ 
+ 			xas_set_mark(&xas, PAGECACHE_TAG_WRITEBACK);
+ 			if (bdi_cap_account_writeback(bdi))
+-				inc_wb_stat(inode_to_wb(inode), WB_WRITEBACK);
++				wb_stat_mod(inode_to_wb(inode), WB_WRITEBACK, nr);
+ 
+ 			/*
+ 			 * We can come through here when swapping anonymous
+-			 * pages, so we don't necessarily have an inode to track
++			 * folios, so we don't necessarily have an inode to track
+ 			 * for sync.
+ 			 */
+ 			if (mapping->host && !on_wblist)
+ 				sb_mark_inode_writeback(mapping->host);
+ 		}
+-		if (!PageDirty(page))
++		if (!folio_test_dirty(folio))
+ 			xas_clear_mark(&xas, PAGECACHE_TAG_DIRTY);
+ 		if (!keep_write)
+ 			xas_clear_mark(&xas, PAGECACHE_TAG_TOWRITE);
+ 		xas_unlock_irqrestore(&xas, flags);
+ 	} else {
+-		ret = TestSetPageWriteback(page);
++		ret = folio_test_set_writeback(folio);
+ 	}
+ 	if (!ret) {
+-		inc_lruvec_page_state(page, NR_WRITEBACK);
+-		inc_zone_page_state(page, NR_ZONE_WRITE_PENDING);
++		inc_lruvec_page_state(&folio->page, NR_WRITEBACK);
++		inc_zone_page_state(&folio->page, NR_ZONE_WRITE_PENDING);
+ 	}
+-	unlock_page_memcg(page);
++	folio_memcg_unlock(folio);
+ 	return ret;
++}
++EXPORT_SYMBOL(__folio_start_writeback);
+ 
++bool set_page_writeback(struct page *page)
++{
++	return folio_start_writeback(page_folio(page));
++}
++EXPORT_SYMBOL(set_page_writeback);
++
++int __test_set_page_writeback(struct page *page, bool keep_write)
++{
++	return __folio_start_writeback(page_folio(page), keep_write);
+ }
+ EXPORT_SYMBOL(__test_set_page_writeback);
+ 
